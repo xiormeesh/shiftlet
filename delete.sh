@@ -3,7 +3,7 @@ set -eu
 
 source "$(dirname "$0")/common.sh"
 
-[[ $# -eq 1 ]] || die "usage: ./cleanup.sh <cluster.env|name>"
+[[ $# -eq 1 ]] || die "usage: ./delete.sh <cluster.env|name>"
 
 if [[ -f "$1" ]]; then
     load_env "$1"

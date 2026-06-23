@@ -229,7 +229,7 @@ resolve_release_image() {
 create_cluster() {
     local name=$1 releaseImage=$2 memoryMB=$3 pullSecretFile=$4
 
-    [[ -z "$(get_slot "$name")" ]] || die "cluster '${name}' already exists; run ./cleanup.sh first"
+    [[ -z "$(get_slot "$name")" ]] || die "cluster '${name}' already exists; run ./delete.sh first"
 
     local sshKeyFile=""
     if   [[ -f ~/.ssh/id_ed25519.pub ]]; then sshKeyFile=~/.ssh/id_ed25519.pub
@@ -257,14 +257,14 @@ create_cluster() {
     if [[ -d "$assets" ]] \
         || sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$" \
         || sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; then
-        die "stale resources found for '${name}'; run: ./cleanup.sh ${name}"
+        die "stale resources found for '${name}'; run: ./delete.sh ${name}"
     fi
 
     local start
     start=$(date +%s)
 
     # Register the slot before touching any external resource so a failed
-    # install can always be cleaned up with ./cleanup.sh
+    # install can always be cleaned up with ./delete.sh
     sudo mkdir -p "${DATA_DIR}/${name}"
     echo "${slot}=${name}" | sudo tee -a "$SLOTS_FILE" >/dev/null
     mkdir "$assets"

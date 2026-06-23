@@ -3,7 +3,7 @@ set -eu
 
 source "$(dirname "$0")/common.sh"
 
-[[ $# -eq 1 ]] || die "usage: ./setup.sh <cluster.env>"
+[[ $# -eq 1 ]] || die "usage: ./create.sh <cluster.env>"
 
 load_env "$1"
 
