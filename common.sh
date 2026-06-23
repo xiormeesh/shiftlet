@@ -130,6 +130,43 @@ remove_fw_rules() {
     rm -f "$tmp"
 }
 
+sync_inter_bridge_rules() {
+    if [[ ! -f "$SLOTS_FILE" ]] || [[ ! -s "$SLOTS_FILE" ]]; then
+        return
+    fi
+
+    # Remove all existing inter-bridge rules
+    local tmp
+    tmp=$(mktemp)
+    sudo iptables-save | grep -v "shiftlet-interbridge" > "$tmp"
+    sudo iptables-restore < "$tmp"
+    rm -f "$tmp"
+
+    # Collect active bridges
+    local bridges=()
+    while IFS='=' read -r slot name; do
+        [[ -n "$slot" && -n "$name" ]] || continue
+        bridges+=("$(bridge_for "$slot")")
+    done < "$SLOTS_FILE"
+
+    # If 2+ clusters, enable ip_forward and add pairwise ACCEPT rules
+    if [[ ${#bridges[@]} -ge 2 ]]; then
+        info "Enabling inter-cluster routing for ${#bridges[@]} clusters"
+        echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-shiftlet.conf >/dev/null
+        sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
+        for (( i=0; i<${#bridges[@]}; i++ )); do
+            for (( j=i+1; j<${#bridges[@]}; j++ )); do
+                sudo iptables -I FORWARD \
+                    -i "${bridges[$i]}" -o "${bridges[$j]}" \
+                    -m comment --comment "shiftlet-interbridge" -j ACCEPT
+                sudo iptables -I FORWARD \
+                    -i "${bridges[$j]}" -o "${bridges[$i]}" \
+                    -m comment --comment "shiftlet-interbridge" -j ACCEPT
+            done
+        done
+    fi
+}
+
 # ── connection instructions ───────────────────────────────────────────────────
 print_connection_info() {
     local name=$1
@@ -419,6 +456,7 @@ EOF
     sudo virsh detach-disk "$hostname" "$iso" --config
 
     apply_fw_rules "$name" "$vmIP"
+    sync_inter_bridge_rules
 
     local elapsed=$(( ($(date +%s) - start) / 60 ))
     echo ""
@@ -460,6 +498,8 @@ delete_cluster() {
     [[ -d "$assets" && "$assets" == *"shiftlet-"* ]] && rm -rf "$assets" || true
     sudo rm -rf "${DATA_DIR}/${name}"
     sudo sed -i "/^${slot}=${name}$/d" "$SLOTS_FILE"
+
+    sync_inter_bridge_rules
 
     info "Cluster '${name}' deleted"
 }
