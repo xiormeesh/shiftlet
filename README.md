@@ -47,7 +47,8 @@ The kubeadmin password is saved at `/var/lib/shiftlet/<name>/kubeadmin-password`
 | `delete.sh` | `./delete.sh <name\|cluster.env>` | Delete a cluster and all its resources |
 | `expose.sh` | `./expose.sh <name\|cluster.env>` | Re-apply port forwarding after a reboot |
 | `list.sh` | `./list.sh` | List all clusters with connection info |
-| `latest.sh` | `./latest.sh [X.Y\|latest]` | Print the latest stable OCP version |
+| `get_latest.sh` | `./get_latest.sh [X.Y\|latest]` | Print the latest stable OCP version |
+| `get_capabilities.sh` | `./get_capabilities.sh` | Print known OCP capabilities for env files |
 
 ## Env file format
 
