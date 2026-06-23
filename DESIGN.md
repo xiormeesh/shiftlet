@@ -59,6 +59,10 @@ For the remote machine to resolve the cluster's domain names, add the host's LAN
 
 Bridge networking is intentionally not used: on WiFi (802.11 infrastructure mode), the AP rejects frames whose source MAC has not authenticated — bridging a VM tap device to a wireless interface silently drops all VM traffic. NAT + port forwarding works on both wired and wireless hosts.
 
+### Same-host inter-cluster connectivity
+
+When multiple clusters exist on the same host, shiftlet automatically adds iptables FORWARD ACCEPT rules between their bridge interfaces (tagged `shiftlet-interbridge`). This allows VMs on different libvirt NAT networks to route through the host. Rules are synced on every create and delete.
+
 ### Persistence
 
 IP forwarding (`net.ipv4.ip_forward=1`) is persisted to `/etc/sysctl.d/99-shiftlet.conf` on first `expose`. The iptables rules themselves are not automatically persisted across reboots.
@@ -71,7 +75,7 @@ Options to persist iptables rules:
 ## Install flow
 
 ```
-shiftlet create dev --version latest
+./create.sh dev.env
     │
     ├─ resolve latest OCP version via cincinnati-graph-data (gh CLI)
     ├─ assign slot → derive all identifiers
@@ -84,6 +88,7 @@ shiftlet create dev --version latest
     ├─ launch VM via virt-install (with autostart)
     ├─ wait for OCP install  (openshift-install agent wait-for install-complete)
     ├─ copy kubeconfig → /var/lib/shiftlet/dev/kubeconfig
+    ├─ extract + store kubeadmin-password
     └─ detach ISO from VM
 ```
 
@@ -104,6 +109,7 @@ The slot is registered before any external resources are created. If `create` fa
   slots                    # registry: one "slot=name" line per cluster
   dev/
     kubeconfig             # cluster kubeconfig (readable by installing user)
+    kubeadmin-password     # kubeadmin login password
     exposed                # flag file: present if port forwarding is active
   hub/
     kubeconfig
