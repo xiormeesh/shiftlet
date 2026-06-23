@@ -133,19 +133,22 @@ remove_fw_rules() {
 # ── connection instructions ───────────────────────────────────────────────────
 print_connection_info() {
     local name=$1
-    local domain lanIP hostname_fqdn kc
+    local domain lanIP hostname_fqdn kc password
     domain=$(domain_for "$name")
     lanIP=$(lan_ip)
     hostname_fqdn=$(hostname)
     kc=$(kubeconfig "$name")
+    password="<not yet available>"
+    [[ -f "${DATA_DIR}/${name}/kubeadmin-password" ]] \
+        && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
 
     echo ""
     echo "------------------------------------------------------------"
     echo "Cluster '${name}' is ready"
     echo ""
-    echo "  Host: ${hostname_fqdn}  (${lanIP})"
+    echo "  This host: ${hostname_fqdn} (${lanIP})"
     echo ""
-    echo "  Add to /etc/hosts on the remote machine:"
+    echo "  To reach this cluster from another machine, add to /etc/hosts:"
     echo "    ${lanIP}  api.${domain}"
     echo "    ${lanIP}  console-openshift-console.apps.${domain}"
     echo "    ${lanIP}  oauth-openshift.apps.${domain}"
@@ -155,9 +158,10 @@ print_connection_info() {
     echo ""
     echo "  Console:"
     echo "    https://console-openshift-console.apps.${domain}"
+    echo "    Login: kubeadmin / ${password}"
     echo ""
     echo "  Note: iptables rules do not survive reboots."
-    echo "        Re-apply after reboot with: ./expose.sh <name>"
+    echo "        Re-apply after reboot with: ./expose.sh ${name}"
     echo "------------------------------------------------------------"
 }
 
@@ -467,10 +471,13 @@ list_clusters() {
         return
     fi
 
-    printf "%-15s  %-5s  %-22s  %s\n" NAME SLOT SUBNET KUBECONFIG
+    printf "%-15s  %-5s  %-22s  %-45s  %s\n" NAME SLOT SUBNET KUBECONFIG PASSWORD
     while IFS='=' read -r slot name; do
         [[ -n "$slot" && -n "$name" ]] || continue
-        printf "%-15s  %-5s  %-22s  %s\n" \
-            "$name" "$slot" "$(subnet_for "$slot").0/24" "$(kubeconfig "$name")"
+        local password="-"
+        [[ -f "${DATA_DIR}/${name}/kubeadmin-password" ]] \
+            && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
+        printf "%-15s  %-5s  %-22s  %-45s  %s\n" \
+            "$name" "$slot" "$(subnet_for "$slot").0/24" "$(kubeconfig "$name")" "$password"
     done < "$SLOTS_FILE"
 }
