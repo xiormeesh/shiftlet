@@ -125,7 +125,7 @@ remove_fw_rules() {
     info "Removing port forwarding for '${name}'"
     local tmp
     tmp=$(mktemp)
-    sudo iptables-save | grep -v -- "shiftlet-${name}" > "$tmp"
+    sudo iptables-save | { grep -v -- "shiftlet-${name}" || true; } > "$tmp"
     sudo iptables-restore < "$tmp"
     rm -f "$tmp"
 }
@@ -138,7 +138,7 @@ sync_inter_bridge_rules() {
     # Remove all existing inter-bridge rules
     local tmp
     tmp=$(mktemp)
-    sudo iptables-save | grep -v "shiftlet-interbridge" > "$tmp"
+    sudo iptables-save | { grep -v "shiftlet-interbridge" || true; } > "$tmp"
     sudo iptables-restore < "$tmp"
     rm -f "$tmp"
 
@@ -301,6 +301,7 @@ create_cluster() {
     ocp_arch=$(_ocp_arch)
 
     if [[ -d "$assets" ]] \
+        || [[ -d "${DATA_DIR}/${name}" ]] \
         || sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$" \
         || sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; then
         die "stale resources found for '${name}'; run: ./delete.sh ${name}"
@@ -478,13 +479,21 @@ delete_cluster() {
 
     local slot
     slot=$(get_slot "$name")
-    [[ -n "$slot" ]] || die "cluster '${name}' not found"
 
     local network hostname domain assets
     network=$(net_name "$name")
     hostname=$(vm_hostname "$name")
     domain=$(domain_for "$name")
     assets=$(assets_dir "$name")
+
+    # Check that at least something exists to clean up
+    if [[ -z "$slot" ]] \
+        && ! sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$" \
+        && ! sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$" \
+        && [[ ! -d "$assets" ]] \
+        && [[ ! -d "${DATA_DIR}/${name}" ]]; then
+        die "cluster '${name}' not found"
+    fi
 
     remove_fw_rules "$name"
 
@@ -505,7 +514,7 @@ delete_cluster() {
     sudo sed -i "/${domain}/d" /etc/hosts
     [[ -d "$assets" && "$assets" == *"shiftlet-"* ]] && rm -rf "$assets" || true
     sudo rm -rf "${DATA_DIR}/${name}"
-    sudo sed -i "/^${slot}=${name}$/d" "$SLOTS_FILE"
+    [[ -n "$slot" ]] && sudo sed -i "/^${slot}=${name}$/d" "$SLOTS_FILE"
 
     sync_inter_bridge_rules
 
