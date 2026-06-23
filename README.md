@@ -6,9 +6,9 @@ Supports multiple clusters on the same host and cross-host cluster connectivity 
 
 ## Prerequisites
 
-- Linux host with libvirt/KVM
+- Linux host with libvirt/KVM (`virsh`, `virt-install`, `qemu-kvm`)
   - Fedora: `sudo dnf install @virtualization`
-- `sudo` access
+- `sudo` access (for virsh, /etc/hosts, iptables, /var/lib/shiftlet)
 - A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret)
 - `oc` client (auto-installed if missing)
 - `gh` CLI (only for version resolution) — [install](https://cli.github.com)

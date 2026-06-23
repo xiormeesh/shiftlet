@@ -272,6 +272,11 @@ create_cluster() {
 
     [[ -z "$(get_slot "$name")" ]] || die "cluster '${name}' already exists; run ./delete.sh first"
 
+    for cmd in virsh virt-install qemu-kvm; do
+        command -v "$cmd" &>/dev/null \
+            || die "'${cmd}' not found — install with: sudo dnf install @virtualization"
+    done
+
     local sshKeyFile=""
     if   [[ -f ~/.ssh/id_ed25519.pub ]]; then sshKeyFile=~/.ssh/id_ed25519.pub
     elif [[ -f ~/.ssh/id_rsa.pub     ]]; then sshKeyFile=~/.ssh/id_rsa.pub
@@ -434,7 +439,10 @@ EOF
         --os-variant rhel9-unknown \
         --noautoconsole &
 
+    local retries=0
     while ! sudo virsh list --all 2>/dev/null | grep -q "[[:space:]]${hostname}[[:space:]].*running"; do
+        (( retries++ ))
+        [[ $retries -lt 60 ]] || die "VM failed to start after 5 minutes"
         echo "  waiting for VM to start..."
         sleep 5
     done
