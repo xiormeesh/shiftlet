@@ -263,6 +263,13 @@ create_cluster() {
     local start
     start=$(date +%s)
 
+    # Keep sudo credentials alive during the long install wait (~40 min).
+    # Default sudo timeout is 5 minutes; without this, post-install sudo
+    # calls would hang waiting for a password.
+    while true; do sudo -n -v 2>/dev/null; sleep 240; done &
+    SUDO_KEEPER_PID=$!
+    trap "kill $SUDO_KEEPER_PID 2>/dev/null" EXIT
+
     # Register the slot before touching any external resource so a failed
     # install can always be cleaned up with ./delete.sh
     sudo mkdir -p "${DATA_DIR}/${name}"
@@ -399,6 +406,10 @@ EOF
     info "Saving kubeconfig"
     sudo cp "${assets}/auth/kubeconfig" "${DATA_DIR}/${name}/kubeconfig"
     sudo chmod 644 "${DATA_DIR}/${name}/kubeconfig"
+
+    info "Saving kubeadmin password"
+    sudo cp "${assets}/auth/kubeadmin-password" "${DATA_DIR}/${name}/kubeadmin-password"
+    sudo chmod 644 "${DATA_DIR}/${name}/kubeadmin-password"
 
     info "Detaching install ISO"
     sudo virsh detach-disk "$hostname" "$iso" --config
