@@ -3,13 +3,13 @@
 
 # ── state ─────────────────────────────────────────────────────────────────────
 DATA_DIR="/var/lib/shiftlet"
-SLOTS_FILE="${DATA_DIR}/slots"
+REGISTRY_FILE="${DATA_DIR}/clusters"
 
 # ── network constants ─────────────────────────────────────────────────────────
 SUBNET_BASE="192.168"
-SUBNET_THIRD_BASE=133   # slot 0 → .133.x, slot 1 → .134.x, …
+SUBNET_THIRD_BASE=133   # id 0 → .133.x, id 1 → .134.x, …
 VM_IP_SUFFIX=80
-MAX_SLOTS=10
+MAX_CLUSTERS=10
 OCP_RELEASE_BASE="quay.io/openshift-release-dev/ocp-release"
 
 # ── architecture ──────────────────────────────────────────────────────────────
@@ -50,17 +50,17 @@ load_env() {
     [[ -f "${PULL_SECRET}"   ]] || die "pull secret file not found: ${PULL_SECRET}"
 }
 
-# ── slot management ───────────────────────────────────────────────────────────
-get_slot() {
-    [[ -f "$SLOTS_FILE" ]] || return 0
-    grep -m1 "^[0-9]\+=${1}$" "$SLOTS_FILE" 2>/dev/null | cut -d= -f1 || true
+# ── cluster registry ──────────────────────────────────────────────────────────
+get_cluster_id() {
+    [[ -f "$REGISTRY_FILE" ]] || return 0
+    grep -m1 "^[0-9]\+=${1}$" "$REGISTRY_FILE" 2>/dev/null | cut -d= -f1 || true
 }
 
-next_slot() {
-    [[ -f "$SLOTS_FILE" ]] || { echo 0; return; }
+next_cluster_id() {
+    [[ -f "$REGISTRY_FILE" ]] || { echo 0; return; }
     local i=0
-    while grep -q "^${i}=" "$SLOTS_FILE" 2>/dev/null; do (( i++ )); done
-    [[ $i -lt $MAX_SLOTS ]] || die "maximum of ${MAX_SLOTS} simultaneous clusters reached"
+    while grep -q "^${i}=" "$REGISTRY_FILE" 2>/dev/null; do (( i++ )); done
+    [[ $i -lt $MAX_CLUSTERS ]] || die "maximum of ${MAX_CLUSTERS} simultaneous clusters reached"
     echo "$i"
 }
 
@@ -131,7 +131,7 @@ remove_fw_rules() {
 }
 
 sync_inter_bridge_rules() {
-    if [[ ! -f "$SLOTS_FILE" ]] || [[ ! -s "$SLOTS_FILE" ]]; then
+    if [[ ! -f "$REGISTRY_FILE" ]] || [[ ! -s "$REGISTRY_FILE" ]]; then
         return
     fi
 
@@ -144,10 +144,11 @@ sync_inter_bridge_rules() {
 
     # Collect active bridges
     local bridges=()
-    while IFS='=' read -r slot name; do
-        [[ -n "$slot" && -n "$name" ]] || continue
-        bridges+=("$(bridge_for "$slot")")
-    done < "$SLOTS_FILE"
+    local _slot _name
+    while IFS='=' read -r _slot _name; do
+        [[ -n "$_slot" && -n "$_name" ]] || continue
+        bridges+=("$(bridge_for "$_slot")")
+    done < "$REGISTRY_FILE"
 
     # If 2+ clusters, enable ip_forward and add pairwise ACCEPT rules
     if [[ ${#bridges[@]} -ge 2 ]]; then
@@ -270,7 +271,7 @@ resolve_release_image() {
 create_cluster() {
     local name=$1 releaseImage=$2 memoryMB=$3 pullSecretFile=$4
 
-    [[ -z "$(get_slot "$name")" ]] || die "cluster '${name}' already exists; run ./delete.sh first"
+    [[ -z "$(get_cluster_id "$name")" ]] || die "cluster '${name}' already exists; run ./delete.sh first"
 
     for cmd in virsh virt-install qemu-kvm; do
         command -v "$cmd" &>/dev/null \
@@ -286,13 +287,13 @@ create_cluster() {
         sshKeyFile=~/.ssh/id_rsa.pub
     fi
 
-    local slot subnet vmIP vmMAC netMAC bridge network hostname domain assets baseDomain ocp_arch
-    slot=$(next_slot)
-    subnet=$(subnet_for "$slot")
-    vmIP=$(vm_ip_for "$slot")
-    vmMAC=$(vm_mac_for "$slot")
-    netMAC=$(net_mac_for "$slot")
-    bridge=$(bridge_for "$slot")
+    local cid subnet vmIP vmMAC netMAC bridge network hostname domain assets baseDomain ocp_arch
+    cid=$(next_cluster_id)
+    subnet=$(subnet_for "$cid")
+    vmIP=$(vm_ip_for "$cid")
+    vmMAC=$(vm_mac_for "$cid")
+    netMAC=$(net_mac_for "$cid")
+    bridge=$(bridge_for "$cid")
     network=$(net_name "$name")
     hostname=$(vm_hostname "$name")
     domain=$(domain_for "$name")
@@ -317,10 +318,8 @@ create_cluster() {
     SUDO_KEEPER_PID=$!
     trap "kill $SUDO_KEEPER_PID 2>/dev/null" EXIT
 
-    # Register the slot before touching any external resource so a failed
-    # install can always be cleaned up with ./delete.sh
     sudo mkdir -p "${DATA_DIR}/${name}"
-    echo "${slot}=${name}" | sudo tee -a "$SLOTS_FILE" >/dev/null
+    echo "${cid}=${name}" | sudo tee -a "$REGISTRY_FILE" >/dev/null
     mkdir "$assets"
 
     if ! command -v oc &>/dev/null; then
@@ -432,21 +431,13 @@ EOF
         --name "$hostname" \
         --vcpus 8 \
         --memory "$memoryMB" \
-        --disk size=100,bus=virtio,cache=none,io=native \
+        --disk path=/var/lib/libvirt/images/${hostname}.qcow2,size=100,bus=virtio,cache=none,io=native \
         --disk "path=${iso},device=cdrom,bus=sata" \
         --boot hd,cdrom \
         --import \
         --network "network=${network},mac=${vmMAC}" \
         --os-variant rhel9-unknown \
-        --noautoconsole &
-
-    local retries=0
-    while ! sudo virsh list --all 2>/dev/null | grep -q "[[:space:]]${hostname}[[:space:]].*running"; do
-        (( retries++ ))
-        [[ $retries -lt 60 ]] || die "VM failed to start after 5 minutes"
-        echo "  waiting for VM to start..."
-        sleep 5
-    done
+        --noautoconsole
 
     sudo virsh autostart "$hostname"
 
@@ -464,21 +455,23 @@ EOF
     info "Detaching install ISO"
     sudo virsh detach-disk "$hostname" "$iso" --config
 
-    apply_fw_rules "$name" "$vmIP"
-    sync_inter_bridge_rules
-
     local elapsed=$(( ($(date +%s) - start) / 60 ))
     echo ""
     echo "Installed in ${elapsed} minutes"
-    print_connection_info "$name"
+    echo ""
+    echo "  Kubeconfig:"
+    echo "    export KUBECONFIG=$(kubeconfig "$name")"
+    echo ""
+    echo "  To expose on LAN or enable inter-cluster connectivity:"
+    echo "    ./expose.sh ${name}"
 }
 
 # ── delete ────────────────────────────────────────────────────────────────────
 delete_cluster() {
     local name=$1
 
-    local slot
-    slot=$(get_slot "$name")
+    local cid
+    cid=$(get_cluster_id "$name")
 
     local network hostname domain assets
     network=$(net_name "$name")
@@ -487,7 +480,7 @@ delete_cluster() {
     assets=$(assets_dir "$name")
 
     # Check that at least something exists to clean up
-    if [[ -z "$slot" ]] \
+    if [[ -z "$cid" ]] \
         && ! sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$" \
         && ! sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$" \
         && [[ ! -d "$assets" ]] \
@@ -511,10 +504,11 @@ delete_cluster() {
         sudo virsh net-undefine "$network"
     fi
 
+    info "Removing DNS entries for ${domain} from /etc/hosts"
     sudo sed -i "/${domain}/d" /etc/hosts
     [[ -d "$assets" && "$assets" == *"shiftlet-"* ]] && rm -rf "$assets" || true
     sudo rm -rf "${DATA_DIR}/${name}"
-    [[ -n "$slot" ]] && sudo sed -i "/^${slot}=${name}$/d" "$SLOTS_FILE"
+    [[ -n "$cid" ]] && sudo sed -i "/^${cid}=${name}$/d" "$REGISTRY_FILE"
 
     sync_inter_bridge_rules
 
@@ -523,18 +517,18 @@ delete_cluster() {
 
 # ── list ──────────────────────────────────────────────────────────────────────
 list_clusters() {
-    if [[ ! -f "$SLOTS_FILE" ]] || [[ ! -s "$SLOTS_FILE" ]]; then
+    if [[ ! -f "$REGISTRY_FILE" ]] || [[ ! -s "$REGISTRY_FILE" ]]; then
         echo "no clusters"
         return
     fi
 
-    printf "%-15s  %-5s  %-22s  %-45s  %s\n" NAME SLOT SUBNET KUBECONFIG PASSWORD
-    while IFS='=' read -r slot name; do
-        [[ -n "$slot" && -n "$name" ]] || continue
+    printf "%-15s  %-3s  %-22s  %-45s  %s\n" NAME ID SUBNET KUBECONFIG PASSWORD
+    while IFS='=' read -r cid name; do
+        [[ -n "$cid" && -n "$name" ]] || continue
         local password="-"
         [[ -f "${DATA_DIR}/${name}/kubeadmin-password" ]] \
             && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
-        printf "%-15s  %-5s  %-22s  %-45s  %s\n" \
-            "$name" "$slot" "$(subnet_for "$slot").0/24" "$(kubeconfig "$name")" "$password"
-    done < "$SLOTS_FILE"
+        printf "%-15s  %-3s  %-22s  %-45s  %s\n" \
+            "$name" "$cid" "$(subnet_for "$cid").0/24" "$(kubeconfig "$name")" "$password"
+    done < "$REGISTRY_FILE"
 }

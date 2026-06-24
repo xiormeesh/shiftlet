@@ -12,9 +12,10 @@ else
     NAME="$1"
 fi
 
-slot=$(get_slot "$NAME")
-[[ -n "$slot" ]] || die "cluster '${NAME}' not found"
+cid=$(get_cluster_id "$NAME")
+[[ -n "$cid" ]] || die "cluster '${NAME}' not found"
 
 remove_fw_rules "$NAME"
-apply_fw_rules "$NAME" "$(vm_ip_for "$slot")"
+apply_fw_rules "$NAME" "$(vm_ip_for "$cid")"
+sync_inter_bridge_rules
 print_connection_info "$NAME"

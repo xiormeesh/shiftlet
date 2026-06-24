@@ -59,6 +59,8 @@ PULL_SECRET=~/.config/openshift/pull-secret
 CAPABILITIES="Ingress Console"
 ```
 
+See [hub.env.example](hub.env.example) for all available capabilities with descriptions. Run `./get_capabilities.sh` for a quick list. Capabilities can be [enabled post-install](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installation_overview/cluster-capabilities) but not disabled.
+
 Three profiles are included:
 
 - **dev.env** — Ingress + Console, 12 GB RAM
