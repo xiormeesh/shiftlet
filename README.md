@@ -7,7 +7,7 @@ Supports multiple clusters on the same host and cross-host cluster connectivity 
 ## Prerequisites
 
 - Linux host with libvirt/KVM (`virsh`, `virt-install`, `qemu-kvm`)
-  - Fedora: `sudo dnf install @virtualization`
+  - Fedora: `sudo dnf install @virtualization virt-install`
 - `sudo` access (for virsh, /etc/hosts, iptables, /var/lib/shiftlet)
 - A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret)
 - `oc` client (auto-installed if missing)
@@ -15,25 +15,24 @@ Supports multiple clusters on the same host and cross-host cluster connectivity 
 
 ## Quick start
 
-1. Copy one of the example env files and set your pull secret path:
+1. Edit an env file and set your pull secret path:
 
 ```bash
-cp hub.env.example hub.env
-vim hub.env
+vim dev.env
 ```
 
 2. Create a cluster:
 
 ```bash
-./create.sh hub.env
+./create.sh dev.env
 ```
 
-This takes ~40 minutes. The cluster is automatically exposed on your LAN IP when done.
+This takes ~40 minutes. The cluster is only accessible from the host machine by default.
 
 3. Access the cluster:
 
 ```bash
-export KUBECONFIG=/var/lib/shiftlet/hub/kubeconfig
+export KUBECONFIG=/var/lib/shiftlet/dev/kubeconfig
 oc get nodes
 ```
 
@@ -45,7 +44,7 @@ The kubeadmin password is saved at `/var/lib/shiftlet/<name>/kubeadmin-password`
 |--------|-------|-------------|
 | `create.sh` | `./create.sh <cluster.env>` | Create a cluster from an env file |
 | `delete.sh` | `./delete.sh <name\|cluster.env>` | Delete a cluster and all its resources |
-| `expose.sh` | `./expose.sh <name\|cluster.env>` | Re-apply port forwarding after a reboot |
+| `expose.sh` | `./expose.sh <name\|cluster.env>` | Set up LAN port forwarding and inter-cluster connectivity |
 | `list.sh` | `./list.sh` | List all clusters with connection info |
 | `get_latest.sh` | `./get_latest.sh [X.Y\|latest]` | Print the latest stable OCP version |
 | `get_capabilities.sh` | `./get_capabilities.sh` | Print known OCP capabilities for env files |
@@ -53,41 +52,66 @@ The kubeadmin password is saved at `/var/lib/shiftlet/<name>/kubeadmin-password`
 ## Env file format
 
 ```bash
-NAME=hub
+NAME=dev
 VERSION=4.21.5
-MEMORY_GB=20
+MEMORY_GB=12
 PULL_SECRET=~/.config/openshift/pull-secret
-CAPABILITIES="Ingress OperatorLifecycleManager marketplace Console MachineAPI Storage"
+CAPABILITIES="Ingress Console"
 ```
 
-Three example profiles are included:
+Three profiles are included:
 
-- **hub.env** — full capabilities, 20 GB RAM (for MCE/ACM, OLS hub)
-- **spoke.env** — minimal capabilities, 12 GB RAM
-- **dev.env** — barebones, no additional capabilities
+- **dev.env** — Ingress + Console, 12 GB RAM
+- **spoke.env** — adds OLM, 12 GB RAM
+- **hub.env** — adds marketplace + MachineAPI (for MCE/ACM), 20 GB RAM
 
-## Cross-host setup
+Run `./get_capabilities.sh` to see all available capabilities.
 
-To make a cluster reachable from another machine (e.g., for multicluster testing):
+## Exposing clusters
 
-1. Create the cluster — port forwarding is applied automatically
-2. On the remote machine, add `/etc/hosts` entries (printed after create):
+By default, clusters are only accessible from the host machine. To make a cluster reachable from other machines on the LAN or enable connectivity between clusters on the same host, run:
 
-```
-192.168.1.100  api.hub.shiftlet.local
-192.168.1.100  console-openshift-console.apps.hub.shiftlet.local
-192.168.1.100  oauth-openshift.apps.hub.shiftlet.local
+```bash
+./expose.sh <name>
 ```
 
-3. Copy the kubeconfig to the remote machine
+This sets up:
+- **iptables DNAT rules** forwarding ports 80, 443, 6443 from your LAN IP to the cluster VM
+- **Inter-bridge routing** if multiple clusters exist on the same host (so VMs on different libvirt networks can reach each other)
 
-Port forwarding rules do not survive reboots. Re-apply with `./expose.sh <name>`.
+Port forwarding and inter-bridge rules **do not survive reboots**. Re-run `./expose.sh <name>` for each cluster after a reboot.
+
+## Cross-host multi-cluster setup
+
+For multicluster testing with clusters on different machines (e.g., hub on laptop A, spoke on laptop B connected via ethernet):
+
+1. Create and expose on each machine:
+
+```bash
+# Laptop A:
+./create.sh hub.env && ./expose.sh hub
+
+# Laptop B:
+./create.sh spoke.env && ./expose.sh spoke
+```
+
+2. Add `/etc/hosts` entries on each machine to reach the other's cluster (`expose.sh` prints the exact lines). For example, on laptop A add:
+
+```
+<laptop-B-IP>  api.spoke.shiftlet.local
+<laptop-B-IP>  console-openshift-console.apps.spoke.shiftlet.local
+<laptop-B-IP>  oauth-openshift.apps.spoke.shiftlet.local
+```
+
+And vice versa on laptop B for the hub cluster.
 
 ## Same-host multi-cluster
 
-When you create a second cluster on the same host, inter-bridge forwarding rules are added automatically so both VMs can reach each other through the host.
-
 ```bash
-./create.sh hub.env      # slot 0, subnet 192.168.133.0/24
-./create.sh spoke.env    # slot 1, subnet 192.168.134.0/24
+./create.sh hub.env
+./create.sh spoke.env
+./expose.sh hub
+./expose.sh spoke
 ```
+
+After exposing, both VMs can reach each other through the host via inter-bridge forwarding rules.
