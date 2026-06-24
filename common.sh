@@ -30,8 +30,8 @@ _ocp_arch() {
 }
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-die()  { echo "error: $*" >&2; exit 1; }
-info() { echo "* $*"; }
+die()  { echo "[$(date '+%H:%M:%S')] error: $*" >&2; exit 1; }
+info() { echo "[$(date '+%H:%M:%S')] $*"; }
 
 # Load cluster configuration from a .env file.
 # Sets NAME, VERSION, MEMORY_GB, PULL_SECRET in the caller's environment.
@@ -273,6 +273,9 @@ create_cluster() {
 
     [[ -z "$(get_cluster_id "$name")" ]] || die "cluster '${name}' already exists; run ./delete.sh first"
 
+    [[ $memoryMB -ge 16384 ]] \
+        || die "minimum 16 GB RAM required for master nodes (got $(( memoryMB / 1024 )) GB)"
+
     for cmd in virsh virt-install qemu-kvm; do
         command -v "$cmd" &>/dev/null \
             || die "'${cmd}' not found — install with: sudo dnf install @virtualization"
@@ -441,8 +444,15 @@ EOF
 
     sudo virsh autostart "$hostname"
 
-    "${assets}/openshift-install" agent wait-for install-complete \
-        --dir="$assets" --log-level=debug
+    local attempt=1
+    while ! "${assets}/openshift-install" agent wait-for install-complete \
+        --dir="$assets" --log-level=debug; do
+        (( attempt++ ))
+        if [[ $attempt -gt 3 ]]; then
+            die "install did not complete after 3 attempts"
+        fi
+        info "Install not yet complete, retrying (attempt ${attempt}/3)..."
+    done
 
     info "Saving kubeconfig"
     sudo cp "${assets}/auth/kubeconfig" "${DATA_DIR}/${name}/kubeconfig"

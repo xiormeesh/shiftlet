@@ -63,9 +63,11 @@ See [hub.env.example](hub.env.example) for all available capabilities with descr
 
 Three profiles are included:
 
-- **dev.env** — Ingress + Console, 12 GB RAM
-- **spoke.env** — adds OLM, 12 GB RAM
+- **dev.env** — Ingress + Console, 16 GB RAM
+- **spoke.env** — adds OLM, 16 GB RAM
 - **hub.env** — adds marketplace + MachineAPI (for MCE/ACM), 20 GB RAM
+
+Minimum 16 GB RAM per cluster — the installer enforces this for master/control-plane nodes.
 
 Run `./get_capabilities.sh` to see all available capabilities.
 
