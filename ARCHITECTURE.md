@@ -17,7 +17,7 @@ shiftlet deploys and manages local Single Node OpenShift (SNO) clusters for deve
 
 ## Cluster identity
 
-Every cluster gets a **name** (e.g. `hub`, `spoke`, `dev`). A slot registry at `/var/lib/shiftlet/slots` maps slot numbers to names. All cluster identifiers are derived from the slot:
+Every cluster gets a **name** (e.g. `hub`, `spoke`, `dev`). A cluster registry at `/var/lib/shiftlet/clusters` maps cluster IDs to names. All cluster identifiers are derived from the ID:
 
 | Identifier | Derivation |
 |------------|-----------|
@@ -30,7 +30,7 @@ Every cluster gets a **name** (e.g. `hub`, `spoke`, `dev`). A slot registry at `
 | Kubeconfig | `/var/lib/shiftlet/<name>/kubeconfig` |
 | Install assets | `/tmp/shiftlet-<name>/` (install-time only) |
 
-Up to 10 slots are supported (subnets `192.168.133.x` through `192.168.142.x`).
+Up to 10 clusters are supported (subnets `192.168.133.x` through `192.168.142.x`).
 
 ## Networking
 
@@ -39,10 +39,10 @@ Up to 10 slots are supported (subnets `192.168.133.x` through `192.168.142.x`).
 Each cluster lives inside an isolated libvirt NAT network. The host machine can reach the cluster; no other machine on the LAN can. DNS for `<name>.shiftlet.local` is handled via `/etc/hosts` on the host — the libvirt domain DNS is `localOnly="yes"`.
 
 ```
-other laptop   ✗
-               \
-work laptop ── virbr-shlN (NAT) ── VM (192.168.13N.80)
-               ✓
+other host   ✗
+             \
+host A ────── virbr-shlN (NAT) ── VM (192.168.13N.80)
+             ✓
 ```
 
 ### LAN access via port forwarding (`--expose`)
@@ -50,10 +50,10 @@ work laptop ── virbr-shlN (NAT) ── VM (192.168.13N.80)
 The `expose` command adds iptables DNAT rules that forward ports 80, 443, and 6443 from the host's LAN IP to the VM. A POSTROUTING MASQUERADE rule ensures the VM can route responses back through the host.
 
 ```
-other laptop ── (LAN) ── work laptop:6443 ─DNAT─► VM:6443
+host B ── (LAN) ── host A:6443 ─DNAT─► VM:6443
 ```
 
-Port forwarding is tracked via a flag file at `/var/lib/shiftlet/<name>/exposed`. The `delete` command removes rules automatically. Rules are applied immediately but **do not survive reboots** without additional configuration — see [Persistence](#persistence) below.
+The `delete` command removes rules automatically. Rules are applied immediately but **do not survive reboots** without additional configuration — see [Persistence](#persistence) below.
 
 For the remote machine to resolve the cluster's domain names, add the host's LAN IP to `/etc/hosts` on the remote machine (shiftlet prints the exact lines to add after `expose`).
 
@@ -78,8 +78,8 @@ Options to persist iptables rules:
 ./create.sh dev.env
     │
     ├─ resolve latest OCP version via cincinnati-graph-data (gh CLI)
-    ├─ assign slot → derive all identifiers
-    ├─ register slot in /var/lib/shiftlet/slots  ← safe to 'delete' from here
+    ├─ assign cluster ID → derive all identifiers
+    ├─ register cluster in /var/lib/shiftlet/clusters  ← safe to 'delete' from here
     ├─ extract openshift-install from the release payload (oc adm release extract)
     ├─ define + start libvirt NAT network (with autostart)
     ├─ add /etc/hosts entries
@@ -106,11 +106,10 @@ The slot is registered before any external resources are created. If `create` fa
 
 ```
 /var/lib/shiftlet/
-  slots                    # registry: one "slot=name" line per cluster
+  clusters                 # registry: one "id=name" line per cluster
   dev/
     kubeconfig             # cluster kubeconfig (readable by installing user)
     kubeadmin-password     # kubeadmin login password
-    exposed                # flag file: present if port forwarding is active
   hub/
     kubeconfig
     ...

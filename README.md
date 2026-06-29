@@ -65,7 +65,7 @@ Three profiles are included:
 
 - **dev.env** — Ingress + Console, 16 GB RAM
 - **spoke.env** — adds OLM, 16 GB RAM
-- **hub.env** — adds marketplace + MachineAPI (for MCE/ACM), 20 GB RAM
+- **hub.env** — adds marketplace + MachineAPI + Build + ImageRegistry (for MCE/ACM), 25 GB RAM
 
 Minimum 16 GB RAM per cluster — the installer enforces this for master/control-plane nodes.
 
@@ -87,27 +87,27 @@ Port forwarding and inter-bridge rules **do not survive reboots**. Re-run `./exp
 
 ## Cross-host multi-cluster setup
 
-For multicluster testing with clusters on different machines (e.g., hub on laptop A, spoke on laptop B connected via ethernet):
+For multicluster testing with clusters on different machines (e.g., hub on host A, spoke on host B connected via ethernet):
 
 1. Create and expose on each machine:
 
 ```bash
-# Laptop A:
+# Host A:
 ./create.sh hub.env && ./expose.sh hub
 
-# Laptop B:
+# Host B:
 ./create.sh spoke.env && ./expose.sh spoke
 ```
 
-2. Add `/etc/hosts` entries on each machine to reach the other's cluster (`expose.sh` prints the exact lines). For example, on laptop A add:
+2. Add `/etc/hosts` entries on each machine to reach the other's cluster (`expose.sh` prints the exact lines). For example, on host A add:
 
 ```
-<laptop-B-IP>  api.spoke.shiftlet.local
-<laptop-B-IP>  console-openshift-console.apps.spoke.shiftlet.local
-<laptop-B-IP>  oauth-openshift.apps.spoke.shiftlet.local
+<host-B-IP>  api.spoke.shiftlet.local
+<host-B-IP>  console-openshift-console.apps.spoke.shiftlet.local
+<host-B-IP>  oauth-openshift.apps.spoke.shiftlet.local
 ```
 
-And vice versa on laptop B for the hub cluster.
+And vice versa on host B for the hub cluster.
 
 ## Same-host multi-cluster
 

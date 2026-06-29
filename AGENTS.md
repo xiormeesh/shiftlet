@@ -23,7 +23,7 @@ Read `README.md` for usage, env file format, and networking setup. Read `ARCHITE
 
 ## Common tasks
 
-- **Check install progress**: `tail -f /tmp/shiftlet-install.log`
+- **Check install progress**: Watch the `create.sh` output (installer logs to stdout)
 - **SSH into a cluster VM**: `ssh core@192.168.(133+id).80`
 - **Check cluster health**: `KUBECONFIG=/var/lib/shiftlet/<name>/kubeconfig oc get co`
 - **Debug stuck install**: SSH into VM, check `journalctl -b --no-pager | tail -40`
