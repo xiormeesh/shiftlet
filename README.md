@@ -71,6 +71,49 @@ Minimum 16 GB RAM per cluster — the installer enforces this for master/control
 
 Run `./get_capabilities.sh` to see all available capabilities.
 
+## Network Modes
+
+Shiftlet supports two network modes via the `NETWORK_MODE` env variable:
+
+### NAT Mode (Default)
+
+Creates isolated virtual networks per cluster. Works on WiFi or wired ethernet.
+
+- VM gets private IP on isolated subnet (192.168.133.x, 192.168.134.x, etc.)
+- Host can reach VM, LAN cannot
+- Multiple clusters on same host work fine (each gets isolated network)
+- Cross-host multi-cluster requires port forwarding (see firewalld-expose.sh)
+
+Use NAT for:
+- Single cluster development
+- WiFi-based setups
+- Isolated testing
+
+### Bridge Mode (Experimental)
+
+Connects VMs directly to your LAN. Requires wired ethernet.
+
+- VM gets real LAN IP (192.168.1.80, 192.168.1.81, etc.)
+- VM reachable from any device on LAN
+- Cross-host multi-cluster works without port forwarding
+- Assumes /24 subnet, IPs .80-.89 available
+
+Use bridge for:
+- Multi-cluster across physical hosts
+- Hub-spoke testing with hub on laptop A, spoke on laptop B
+
+**Requirements:**
+- Wired ethernet connection (eth*, enp*, ens*, eno*)
+- /24 LAN subnet (e.g., 192.168.1.0/24)
+- IPs .80-.89 reserved/available (not in DHCP pool)
+
+**Setup:**
+```bash
+# Reserve IPs .80-.89 in your router's DHCP settings
+# Create cluster with bridge mode
+NETWORK_MODE=bridge ./create.sh hub.env
+```
+
 ## Exposing clusters
 
 By default, clusters are only accessible from the host machine. To make a cluster reachable from other machines on the LAN or enable connectivity between clusters on the same host, run:
@@ -87,27 +130,27 @@ Port forwarding and inter-bridge rules **do not survive reboots**. Re-run `./exp
 
 ## Cross-host multi-cluster setup
 
-For multicluster testing with clusters on different machines (e.g., hub on host A, spoke on host B connected via ethernet):
+**With bridge mode (recommended):**
 
-1. Create and expose on each machine:
+1. Ensure both hosts on wired ethernet, same LAN
+2. Reserve IPs .80-.89 in router DHCP settings
+3. Create clusters with `NETWORK_MODE=bridge`:
 
 ```bash
 # Host A:
-./create.sh hub.env && ./expose.sh hub
+NETWORK_MODE=bridge ./create.sh hub.env
 
 # Host B:
-./create.sh spoke.env && ./expose.sh spoke
+NETWORK_MODE=bridge ./create.sh spoke.env
 ```
 
-2. Add `/etc/hosts` entries on each machine to reach the other's cluster (`expose.sh` prints the exact lines). For example, on host A add:
+4. Clusters accessible from both hosts via LAN IPs (no /etc/hosts needed):
+   - Hub: 192.168.1.80
+   - Spoke: 192.168.1.81
 
-```
-<host-B-IP>  api.spoke.shiftlet.local
-<host-B-IP>  console-openshift-console.apps.spoke.shiftlet.local
-<host-B-IP>  oauth-openshift.apps.spoke.shiftlet.local
-```
+**With NAT mode (complex, requires firewalld):**
 
-And vice versa on host B for the hub cluster.
+For NAT mode cross-host setup, see firewalld-expose.sh script. Requires iptables/firewalld port forwarding rules and /etc/hosts entries. Bridge mode is simpler.
 
 ## Same-host multi-cluster
 
