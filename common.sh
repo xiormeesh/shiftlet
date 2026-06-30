@@ -48,6 +48,14 @@ load_env() {
     [[ -n "${MEMORY_GB:-}"   ]] || die "MEMORY_GB not set in ${envfile}"
     [[ -n "${PULL_SECRET:-}" ]] || die "PULL_SECRET not set in ${envfile}"
     [[ -f "${PULL_SECRET}"   ]] || die "pull secret file not found: ${PULL_SECRET}"
+
+    # Default NETWORK_MODE to NAT if unset
+    NETWORK_MODE="${NETWORK_MODE:-NAT}"
+
+    # Validate network mode
+    if [[ ! "$NETWORK_MODE" =~ ^(NAT|bridge)$ ]]; then
+        die "NETWORK_MODE must be 'NAT' or 'bridge', got: ${NETWORK_MODE}"
+    fi
 }
 
 # ── cluster registry ──────────────────────────────────────────────────────────
