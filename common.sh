@@ -302,6 +302,54 @@ resolve_release_image() {
     echo "${OCP_RELEASE_BASE}:$(resolve_version "$1")-$(_arch)"
 }
 
+# ── network creation ─────────────────────────────────────────────────────────
+create_nat_network() {
+    local name=$1 network=$2 subnet=$3 vmIP=$4 vmMAC=$5 netMAC=$6
+    local bridge domain assets
+
+    # Derive identifiers from name
+    local cid
+    cid=$(get_cluster_id "$name")
+    bridge=$(bridge_for "$cid")
+    domain=$(domain_for "$name")
+    assets=$(assets_dir "$name")
+
+    info "Creating libvirt network ${network} (${subnet}.0/24)"
+    cat > "${assets}/${network}.xml" << NETXML
+<network>
+  <name>${network}</name>
+  <forward mode="nat">
+    <nat>
+      <port start="1024" end="65535"/>
+    </nat>
+  </forward>
+  <bridge name="${bridge}" stp="on" delay="0"/>
+  <mac address="${netMAC}"/>
+  <domain name="${domain}" localOnly="yes"/>
+  <dns>
+    <host ip="${vmIP}">
+      <hostname>master-0.${domain}</hostname>
+      <hostname>api.${domain}</hostname>
+    </host>
+  </dns>
+  <ip address="${subnet}.1" netmask="255.255.255.0">
+    <dhcp>
+      <range start="${subnet}.80" end="${subnet}.254"/>
+      <host mac="${vmMAC}" name="master-0" ip="${vmIP}"/>
+    </dhcp>
+  </ip>
+</network>
+NETXML
+
+    sudo virsh net-define "${assets}/${network}.xml"
+    sudo virsh net-start "$network"
+    sudo virsh net-autostart "$network"
+
+    info "Adding DNS entries to /etc/hosts"
+    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
+        | sudo tee -a /etc/hosts >/dev/null
+}
+
 # ── create ────────────────────────────────────────────────────────────────────
 create_cluster() {
     local name=$1 releaseImage=$2 memoryMB=$3 pullSecretFile=$4
@@ -373,40 +421,7 @@ create_cluster() {
         --to="$assets" \
         "$releaseImage"
 
-    info "Creating libvirt network ${network} (${subnet}.0/24)"
-    cat > "${assets}/${network}.xml" << NETXML
-<network>
-  <name>${network}</name>
-  <forward mode="nat">
-    <nat>
-      <port start="1024" end="65535"/>
-    </nat>
-  </forward>
-  <bridge name="${bridge}" stp="on" delay="0"/>
-  <mac address="${netMAC}"/>
-  <domain name="${domain}" localOnly="yes"/>
-  <dns>
-    <host ip="${vmIP}">
-      <hostname>master-0.${domain}</hostname>
-      <hostname>api.${domain}</hostname>
-    </host>
-  </dns>
-  <ip address="${subnet}.1" netmask="255.255.255.0">
-    <dhcp>
-      <range start="${subnet}.80" end="${subnet}.254"/>
-      <host mac="${vmMAC}" name="master-0" ip="${vmIP}"/>
-    </dhcp>
-  </ip>
-</network>
-NETXML
-
-    sudo virsh net-define "${assets}/${network}.xml"
-    sudo virsh net-start "$network"
-    sudo virsh net-autostart "$network"
-
-    info "Adding DNS entries to /etc/hosts"
-    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
-        | sudo tee -a /etc/hosts >/dev/null
+    create_nat_network "$name" "$network" "$subnet" "$vmIP" "$vmMAC" "$netMAC"
 
     info "Writing install configs"
     cat > "${assets}/agent-config.yaml" << EOF
