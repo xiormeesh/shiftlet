@@ -59,6 +59,38 @@ For the remote machine to resolve the cluster's domain names, add the host's LAN
 
 Bridge networking is intentionally not used: on WiFi (802.11 infrastructure mode), the AP rejects frames whose source MAC has not authenticated — bridging a VM tap device to a wireless interface silently drops all VM traffic. NAT + port forwarding works on both wired and wireless hosts.
 
+### Bridge mode (experimental)
+
+Alternative to NAT + port forwarding for cross-host multi-cluster. Connects VM to physical LAN via libvirt bridge.
+
+```
+host B ── (LAN) ── host A ── bridge ── VM (192.168.1.80)
+                            (eth0)
+```
+
+**How it works:**
+- Libvirt creates bridge network attached to host's wired interface
+- VM gets static IP on LAN subnet: `{first 3 octets of host IP}.{80 + cluster_id}`
+- VM appears as LAN device with its own MAC address
+- Router learns VM's MAC via ARP, forwards traffic normally
+- No port forwarding, no /etc/hosts needed for cross-host access
+
+**Example:**
+- Host A: 192.168.1.146/24 → Hub VM: 192.168.1.80
+- Host B: 192.168.1.148/24 → Spoke VM: 192.168.1.81
+- Both VMs reachable from any LAN device via real IPs
+
+**Requirements:**
+- Wired ethernet (WiFi APs reject bridged traffic)
+- /24 subnet (255.255.255.0)
+- IPs .80-.89 available (outside DHCP pool)
+
+**Limitations:**
+- Assumes /24 subnet (uses first 3 octets of host IP)
+- No automatic subnet detection
+- User must reserve .80-.89 in router configuration
+- Will not work on /16, /25, or other subnet sizes
+
 ### Same-host inter-cluster connectivity
 
 When multiple clusters exist on the same host, shiftlet automatically adds iptables FORWARD ACCEPT rules between their bridge interfaces (tagged `shiftlet-interbridge`). This allows VMs on different libvirt NAT networks to route through the host. Rules are synced on every create and delete.
