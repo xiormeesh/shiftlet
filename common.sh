@@ -350,6 +350,41 @@ NETXML
         | sudo tee -a /etc/hosts >/dev/null
 }
 
+create_bridge_network() {
+    local name=$1 vmIP=$2 vmMAC=$3 wired_if=$4
+    local network domain assets lanIP lanSubnet
+
+    # Derive identifiers from name
+    local cid
+    cid=$(get_cluster_id "$name")
+    network=$(net_name "$name")
+    domain=$(domain_for "$name")
+    assets=$(assets_dir "$name")
+
+    # Get LAN subnet from host IP (first 3 octets)
+    lanIP=$(lan_ip)
+    lanSubnet=$(echo "$lanIP" | cut -d. -f1-3)
+
+    info "Creating bridge network ${network} on ${wired_if}"
+    info "VM will use IP: ${vmIP} (LAN subnet: ${lanSubnet}.0/24)"
+
+    cat > "${assets}/${network}.xml" << NETXML
+<network>
+  <name>${network}</name>
+  <forward mode="bridge"/>
+  <bridge name="${wired_if}"/>
+</network>
+NETXML
+
+    sudo virsh net-define "${assets}/${network}.xml"
+    sudo virsh net-start "$network"
+    sudo virsh net-autostart "$network"
+
+    info "Adding DNS entries to /etc/hosts"
+    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
+        | sudo tee -a /etc/hosts >/dev/null
+}
+
 # ── create ────────────────────────────────────────────────────────────────────
 create_cluster() {
     local name=$1 releaseImage=$2 memoryMB=$3 pullSecretFile=$4
