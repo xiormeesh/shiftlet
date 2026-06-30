@@ -89,6 +89,28 @@ lan_ip() {
         || hostname -I | awk '{print $1}'
 }
 
+# ── bridge mode validation ────────────────────────────────────────────────────
+validate_bridge_mode() {
+    # Find wired interface (exclude wireless)
+    local wired_if
+    wired_if=$(ip link show | grep -oP '^\d+: (eth|enp|ens|eno)\w+' | cut -d: -f2 | xargs | head -1)
+
+    if [[ -z "$wired_if" ]]; then
+        local all_ifs
+        all_ifs=$(ip link show | grep -oP '^\d+: \K\w+' | grep -v '^lo$' | tr '\n' ', ' | sed 's/,$//')
+        die "bridge mode requires wired ethernet (no eth*/enp*/ens*/eno* found)
+Found interfaces: ${all_ifs}"
+    fi
+
+    # Check interface is UP
+    if ! ip link show "$wired_if" | grep -q "state UP"; then
+        die "wired interface ${wired_if} is not UP
+Connect ethernet cable and retry"
+    fi
+
+    echo "$wired_if"
+}
+
 find_iso() {
     local assets=$1
     local iso
