@@ -56,6 +56,11 @@ load_env() {
     if [[ ! "$NETWORK_MODE" =~ ^(NAT|bridge)$ ]]; then
         die "NETWORK_MODE must be 'NAT' or 'bridge', got: ${NETWORK_MODE}"
     fi
+
+    # Bridge mode validation
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        validate_bridge_mode >/dev/null
+    fi
 }
 
 # ── cluster registry ──────────────────────────────────────────────────────────
