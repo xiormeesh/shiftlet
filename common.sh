@@ -411,7 +411,16 @@ create_cluster() {
     local cid subnet vmIP vmMAC netMAC bridge network hostname domain assets baseDomain ocp_arch
     cid=$(next_cluster_id)
     subnet=$(subnet_for "$cid")
-    vmIP=$(vm_ip_for "$cid")
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        # Bridge mode: VM on LAN subnet
+        local lanIP lanSubnet
+        lanIP=$(lan_ip)
+        lanSubnet=$(echo "$lanIP" | cut -d. -f1-3)
+        vmIP="${lanSubnet}.$((80 + cid))"
+    else
+        # NAT mode: isolated subnet
+        vmIP=$(vm_ip_for "$cid")
+    fi
     vmMAC=$(vm_mac_for "$cid")
     netMAC=$(net_mac_for "$cid")
     bridge=$(bridge_for "$cid")
@@ -456,7 +465,12 @@ create_cluster() {
         --to="$assets" \
         "$releaseImage"
 
-    create_nat_network "$name" "$network" "$subnet" "$vmIP" "$vmMAC" "$netMAC"
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        wired_if=$(validate_bridge_mode)
+        create_bridge_network "$name" "$vmIP" "$vmMAC" "$wired_if"
+    else
+        create_nat_network "$name" "$network" "$subnet" "$vmIP" "$vmMAC" "$netMAC"
+    fi
 
     info "Writing install configs"
     cat > "${assets}/agent-config.yaml" << EOF
