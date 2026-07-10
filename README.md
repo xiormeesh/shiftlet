@@ -12,6 +12,7 @@ Supports multiple clusters on the same host and cross-host cluster connectivity 
 - A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret)
 - `oc` client (auto-installed if missing)
 - `gh` CLI (only for version resolution) — [install](https://cli.github.com)
+- **For bridge mode only**: Linux bridge device (br0) — see [Bridge Setup](#bridge-setup-for-bridge-mode) below
 
 ## Quick start
 
@@ -91,27 +92,102 @@ Use NAT for:
 
 ### Bridge Mode (Experimental)
 
-Connects VMs directly to your LAN. Requires wired ethernet.
+Connects VMs directly to your LAN via a Linux bridge. Requires wired ethernet and bridge setup.
 
 - VM gets real LAN IP (192.168.1.80, 192.168.1.81, etc.)
-- VM reachable from any device on LAN
+- VM reachable from any device on LAN, including the host
 - Cross-host multi-cluster works without port forwarding
 - Assumes /24 subnet, IPs .80-.89 available
 
 Use bridge for:
 - Multi-cluster across physical hosts
-- Hub-spoke testing with hub on laptop A, spoke on laptop B
+- Hub-spoke testing with hub on host A, spoke on host B
 
 **Requirements:**
 - Wired ethernet connection (eth*, enp*, ens*, eno*)
+- Linux bridge device (br0) — see [Bridge Setup](#bridge-setup-for-bridge-mode) below
 - /24 LAN subnet (e.g., 192.168.1.0/24)
 - IPs .80-.89 reserved/available (not in DHCP pool)
 
 **Setup:**
 ```bash
-# Reserve IPs .80-.89 in your router's DHCP settings
-# Create cluster with bridge mode
+# 1. Set up bridge (one-time, see Bridge Setup section below)
+# 2. Reserve IPs .80-.89 in your router's DHCP settings
+# 3. Create cluster with bridge mode
 NETWORK_MODE=bridge ./create.sh hub.env
+```
+
+## Bridge Setup (for Bridge Mode)
+
+Bridge mode requires a Linux bridge device (br0) that connects VMs to your physical LAN. This is a **one-time setup per host**.
+
+### Creating the Bridge with NetworkManager
+
+Most modern Linux systems use NetworkManager. Create the bridge using `nmcli`:
+
+```bash
+# 1. Identify your wired interface name
+ip link show
+
+# Example output shows: eth0, enp0s31f6, etc.
+# Use your actual interface name in the commands below (replace eth0)
+
+# 2. Create bridge device
+sudo nmcli connection add type bridge ifname br0 con-name br0
+
+# 3. Add your wired interface to the bridge
+# This will briefly interrupt network connectivity (~5-10 seconds)
+sudo nmcli connection add type ethernet slave-type bridge \
+    master br0 ifname eth0 con-name bridge-slave-eth0
+
+# 4. Bring up the bridge
+sudo nmcli connection up br0
+
+# 5. Verify bridge is active
+ip link show br0
+nmcli connection show
+```
+
+**What this does:**
+- Creates a bridge device named `br0`
+- Enslaves your physical ethernet interface (eth0) to the bridge
+- Transfers IP configuration from eth0 to br0
+- Your host's LAN connectivity now goes through the bridge
+- VMs attached to br0 will appear as separate devices on your LAN
+
+**Important notes:**
+- Run this on a **wired connection only** (WiFi cannot be bridged)
+- Brief network interruption during setup (5-10 seconds)
+- If connected via SSH, your session may drop
+- Configuration persists across reboots
+- Bridge must be created **before** running shiftlet in bridge mode
+
+### Verifying the Bridge
+
+After creating the bridge, verify it's working:
+
+```bash
+# Check bridge exists and is UP
+ip link show br0
+
+# Check your host still has network connectivity
+ping -c 3 8.8.8.8
+
+# Verify bridge connection is active
+nmcli connection show --active | grep br0
+```
+
+### Removing the Bridge
+
+If you need to remove the bridge and restore direct ethernet:
+
+```bash
+# Delete bridge connections
+sudo nmcli connection delete br0
+sudo nmcli connection delete bridge-slave-eth0
+
+# Bring up original ethernet connection
+sudo nmcli connection up "Wired connection 1"
 ```
 
 ## Exposing clusters

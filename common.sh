@@ -96,24 +96,32 @@ lan_ip() {
 
 # ── bridge mode validation ────────────────────────────────────────────────────
 validate_bridge_mode() {
-    # Find wired interface (exclude wireless)
-    local wired_if
-    wired_if=$(ip link show | grep -oP '^\d+: (eth|enp|ens|eno)\w+' | cut -d: -f2 | xargs | head -1)
+    # Check if br0 exists
+    if ! ip link show br0 &>/dev/null; then
+        die "bridge mode requires bridge device 'br0' but it was not found
 
-    if [[ -z "$wired_if" ]]; then
-        local all_ifs
-        all_ifs=$(ip link show | grep -oP '^\d+: \K\w+' | grep -v '^lo$' | tr '\n' ', ' | sed 's/,$//')
-        die "bridge mode requires wired ethernet (no eth*/enp*/ens*/eno* found)
-Found interfaces: ${all_ifs}"
+Create the bridge first (see README.md - Bridge Setup section):
+  sudo nmcli connection add type bridge ifname br0 con-name br0
+  sudo nmcli connection add type ethernet slave-type bridge \\
+      master br0 ifname <your-eth-interface> con-name bridge-slave-eth0
+  sudo nmcli connection up br0"
     fi
 
-    # Check interface is UP
-    if ! ip link show "$wired_if" | grep -q "state UP"; then
-        die "wired interface ${wired_if} is not UP
-Connect ethernet cable and retry"
+    # Check bridge is UP
+    if ! ip link show br0 | grep -q "state UP"; then
+        die "bridge device br0 exists but is not UP
+Activate it with: sudo nmcli connection up br0"
     fi
 
-    echo "$wired_if"
+    # Verify bridge has an enslaved interface
+    local bridge_ports
+    bridge_ports=$(ip link show type bridge_slave 2>/dev/null | grep -oP '^\d+: \K\w+' | head -1)
+    if [[ -z "$bridge_ports" ]]; then
+        die "bridge br0 has no enslaved interfaces
+Add your wired interface to the bridge (see README.md)"
+    fi
+
+    echo "br0"
 }
 
 find_iso() {
@@ -351,34 +359,19 @@ NETXML
 }
 
 create_bridge_network() {
-    local name=$1 vmIP=$2 vmMAC=$3 wired_if=$4
-    local network domain assets lanIP lanSubnet
+    local name=$1 vmIP=$2 vmMAC=$3 bridge=$4
+    local domain lanIP lanSubnet
 
-    # Derive identifiers from name
-    local cid
-    cid=$(get_cluster_id "$name")
-    network=$(net_name "$name")
     domain=$(domain_for "$name")
-    assets=$(assets_dir "$name")
 
     # Get LAN subnet from host IP (first 3 octets)
     lanIP=$(lan_ip)
     lanSubnet=$(echo "$lanIP" | cut -d. -f1-3)
 
-    info "Creating bridge network ${network} on ${wired_if}"
+    info "Using bridge ${bridge} for VM networking"
     info "VM will use IP: ${vmIP} (LAN subnet: ${lanSubnet}.0/24)"
 
-    cat > "${assets}/${network}.xml" << NETXML
-<network>
-  <name>${network}</name>
-  <forward mode="bridge"/>
-  <bridge name="${wired_if}"/>
-</network>
-NETXML
-
-    sudo virsh net-define "${assets}/${network}.xml"
-    sudo virsh net-start "$network"
-    sudo virsh net-autostart "$network"
+    # No libvirt network creation needed - virt-install will use bridge directly
 
     info "Adding DNS entries to /etc/hosts"
     echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
@@ -465,9 +458,10 @@ create_cluster() {
         --to="$assets" \
         "$releaseImage"
 
+    local bridge_device=""
     if [[ "$NETWORK_MODE" == "bridge" ]]; then
-        wired_if=$(validate_bridge_mode)
-        create_bridge_network "$name" "$vmIP" "$vmMAC" "$wired_if"
+        bridge_device=$(validate_bridge_mode)
+        create_bridge_network "$name" "$vmIP" "$vmMAC" "$bridge_device"
     else
         create_nat_network "$name" "$network" "$subnet" "$vmIP" "$vmMAC" "$netMAC"
     fi
@@ -528,6 +522,15 @@ EOF
 
     info "Starting VM"
     sudo chmod a+x "$assets"
+
+    # Choose network parameter based on mode
+    local network_param
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        network_param="bridge=${bridge_device},mac=${vmMAC}"
+    else
+        network_param="network=${network},mac=${vmMAC}"
+    fi
+
     sudo virt-install \
         --connect qemu:///system \
         --name "$hostname" \
@@ -537,7 +540,7 @@ EOF
         --disk "path=${iso},device=cdrom,bus=sata" \
         --boot hd,cdrom \
         --import \
-        --network "network=${network},mac=${vmMAC}" \
+        --network "$network_param" \
         --os-variant rhel9-unknown \
         --noautoconsole
 
