@@ -1,3 +1,5 @@
 *.env
 .superpowers/
 post-install/
+.claude/
+docs/
