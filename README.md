@@ -45,9 +45,21 @@ The kubeadmin password is saved at `/var/lib/shiftlet/<name>/kubeadmin-password`
 |--------|-------|-------------|
 | `create.sh` | `./create.sh <cluster.env>` | Create a cluster from an env file |
 | `delete.sh` | `./delete.sh <name\|cluster.env>` | Delete a cluster and all its resources |
-| `list.sh` | `./list.sh` | List all clusters with connection info |
+| `list.sh` | `./list.sh` | List all clusters with VM IP, console URL, kubeconfig, and login |
 | `get_latest.sh` | `./get_latest.sh [X.Y\|latest]` | Print the latest stable OCP version |
 | `get_capabilities.sh` | `./get_capabilities.sh` | Print known OCP capabilities for env files |
+
+Example `list.sh` output:
+
+```
+------------------------------------------------------------
+  Name:      hub
+  VM IP:     192.168.1.80
+  Console:   https://console-openshift-console.apps.hub.shiftlet.local
+  Kubeconfig: export KUBECONFIG=/var/lib/shiftlet/hub/kubeconfig
+  Login:     kubeadmin / sHAja-Ptx93-8HIfR-v2DtH
+------------------------------------------------------------
+```
 
 ## Env file format
 
@@ -61,15 +73,13 @@ CAPABILITIES="Ingress Console"
 
 See [hub.env.example](hub.env.example) for all available capabilities with descriptions. Run `./get_capabilities.sh` for a quick list. Capabilities can be [enabled post-install](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installation_overview/cluster-capabilities) but not disabled.
 
-Three profiles are included:
+Env files are gitignored — create your own based on [hub.env.example](hub.env.example). Typical profiles:
 
-- **dev.env** — Ingress + Console, 16 GB RAM
-- **spoke.env** — adds OLM, 16 GB RAM
-- **hub.env** — adds marketplace + MachineAPI + Build + ImageRegistry (for MCE/ACM), 25 GB RAM
+- **dev** — `CAPABILITIES="Ingress Console"`, 16 GB RAM — minimal cluster for local testing
+- **spoke** — adds `OperatorLifecycleManager`, 16 GB RAM — registers to hub via MCE/ACM
+- **hub** — adds `marketplace MachineAPI Build ImageRegistry`, 25 GB RAM — runs MCE/ACM
 
 Minimum 16 GB RAM per cluster — the installer enforces this for master/control-plane nodes.
-
-Run `./get_capabilities.sh` to see all available capabilities.
 
 ## Network Modes
 
