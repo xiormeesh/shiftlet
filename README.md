@@ -76,8 +76,8 @@ See [hub.env.example](hub.env.example) for all available capabilities with descr
 Env files are gitignored — create your own based on [hub.env.example](hub.env.example). Typical profiles:
 
 - **dev** — `CAPABILITIES="Ingress Console"`, 16 GB RAM — minimal cluster for local testing
-- **spoke** — adds `OperatorLifecycleManager`, 16 GB RAM — registers to hub via MCE/ACM
-- **hub** — adds `marketplace MachineAPI Build ImageRegistry`, 25 GB RAM — runs MCE/ACM
+- **spoke** — adds `OperatorLifecycleManager`, 16 GB RAM
+- **hub** — adds `marketplace MachineAPI Build ImageRegistry`, 25 GB RAM — enough resources to run MCE/ACM if installed separately
 
 Minimum 16 GB RAM per cluster — the installer enforces this for master/control-plane nodes.
 

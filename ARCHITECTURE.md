@@ -1,15 +1,18 @@
 # shiftlet design
 
-shiftlet deploys and manages local Single Node OpenShift (SNO) clusters for development and testing. It wraps the [agent-based installer](https://docs.openshift.com/container-platform/latest/installing/installing_with_agent_based_installer/preparing-to-install-with-agent-based-installer.html) and libvirt/KVM into a single command with a clean lifecycle.
+shiftlet creates and deletes local Single Node OpenShift (SNO) clusters for development and testing. It wraps the [agent-based installer](https://docs.openshift.com/container-platform/latest/installing/installing_with_agent_based_installer/preparing-to-install-with-agent-based-installer.html) and libvirt/KVM into a single command with a clean lifecycle.
+
+shiftlet only provisions clusters. Any post-install configuration (operators, multi-cluster management, etc.) is out of scope.
 
 ## Goals
 
-1. **Multi-cluster** — run hub and spoke clusters across multiple hosts
-2. **LAN access** — reach clusters from any device on the local network (bridge mode)
-3. **Simple lifecycle** — one command to create, one to delete, clusters survive host reboots by default
+1. **Simple lifecycle** — one command to create, one to delete, clusters survive host reboots by default
+2. **LAN access** — reach a cluster from any device on the local network (bridge mode)
+3. **Multiple clusters** — run several independent clusters, on the same host or across hosts
 
 ## Non-goals
 
+- Post-install configuration (operators, MCE/ACM setup, etc.)
 - High availability (SNO is single-node by design)
 - Image mirroring / offline installs (future work)
 - Non-Linux hosts
