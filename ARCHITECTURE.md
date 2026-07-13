@@ -4,8 +4,8 @@ shiftlet deploys and manages local Single Node OpenShift (SNO) clusters for deve
 
 ## Goals
 
-1. **Multi-cluster** — run more than one SNO cluster on the same host without conflict
-2. **LAN access** — expose a cluster running on a remote machine to other machines on the local network
+1. **Multi-cluster** — run hub and spoke clusters across multiple hosts
+2. **LAN access** — reach clusters from any device on the local network (bridge mode)
 3. **Simple lifecycle** — one command to create, one to delete, clusters survive host reboots by default
 
 ## Non-goals
@@ -19,18 +19,18 @@ shiftlet deploys and manages local Single Node OpenShift (SNO) clusters for deve
 
 Every cluster gets a **name** (e.g. `hub`, `spoke`, `dev`). A cluster registry at `/var/lib/shiftlet/clusters` maps cluster IDs to names. All cluster identifiers are derived from the ID:
 
-| Identifier | Derivation |
-|------------|-----------|
-| Subnet | `192.168.(133+slot).0/24` |
-| VM IP | `192.168.(133+slot).80` |
-| VM MAC | `52:54:00:93:72:(0x25+slot)` |
-| libvirt network | `shiftlet-<name>` |
-| VM hostname | `shiftlet-<name>` |
-| Domain | `<name>.shiftlet.local` |
-| Kubeconfig | `/var/lib/shiftlet/<name>/kubeconfig` |
-| Install assets | `/tmp/shiftlet-<name>/` (install-time only) |
+| Identifier | NAT mode | Bridge mode |
+|------------|----------|-------------|
+| Subnet | `192.168.(133+id).0/24` | First 3 octets of `BRIDGE_VM_IP` |
+| VM IP | `192.168.(133+id).80` | `BRIDGE_VM_IP` (from env file) |
+| VM MAC | `52:54:00:93:72:(0x25+id)` | same |
+| libvirt network | `shiftlet-<name>` | not created |
+| VM hostname | `shiftlet-<name>` | same |
+| Domain | `<name>.shiftlet.local` | same |
+| Kubeconfig | `/var/lib/shiftlet/<name>/kubeconfig` | same |
+| Install assets | `/tmp/shiftlet-<name>/` (install-time only) | same |
 
-Up to 10 clusters are supported (subnets `192.168.133.x` through `192.168.142.x`).
+Up to 10 NAT clusters are supported per host (subnets `192.168.133.x` through `192.168.142.x`). Bridge mode clusters are limited by available LAN IPs.
 
 ## Networking
 
@@ -45,64 +45,49 @@ host A ────── virbr-shlN (NAT) ── VM (192.168.13N.80)
              ✓
 ```
 
-### LAN access via port forwarding (`--expose`)
+### LAN access (bridge mode)
 
-The `expose` command adds iptables DNAT rules that forward ports 80, 443, and 6443 from the host's LAN IP to the VM. A POSTROUTING MASQUERADE rule ensures the VM can route responses back through the host.
-
-```
-host B ── (LAN) ── host A:6443 ─DNAT─► VM:6443
-```
-
-The `delete` command removes rules automatically. Rules are applied immediately but **do not survive reboots** without additional configuration — see [Persistence](#persistence) below.
-
-For the remote machine to resolve the cluster's domain names, add the host's LAN IP to `/etc/hosts` on the remote machine (shiftlet prints the exact lines to add after `expose`).
-
-Bridge networking is intentionally not used: on WiFi (802.11 infrastructure mode), the AP rejects frames whose source MAC has not authenticated — bridging a VM tap device to a wireless interface silently drops all VM traffic. NAT + port forwarding works on both wired and wireless hosts.
+See bridge mode section below. NAT mode is single-host only.
 
 ### Bridge mode (experimental)
 
-Alternative to NAT + port forwarding for cross-host multi-cluster. Connects VM to physical LAN via libvirt bridge.
+Alternative to NAT + port forwarding for cross-host multi-cluster. Attaches VMs directly to the physical LAN via a Linux bridge (br0).
 
 ```
-host B ── (LAN) ── host A ── bridge ── VM (192.168.1.80)
-                            (eth0)
+host B ── (LAN) ── br0 ── VM (192.168.1.80)
+                   │
+                  eth0
 ```
 
 **How it works:**
-- Libvirt creates bridge network attached to host's wired interface
-- VM gets static IP on LAN subnet: `{first 3 octets of host IP}.{80 + cluster_id}`
-- VM appears as LAN device with its own MAC address
+- User creates a Linux bridge (br0) with their wired interface enslaved to it (one-time setup, see README)
+- VM IP is set explicitly via `BRIDGE_VM_IP` in the env file
+- Static IP is configured via NMState in agent-config.yaml — the VM configures itself with the specified IP at boot
+- VM appears as a separate LAN device with its own MAC address
 - Router learns VM's MAC via ARP, forwards traffic normally
-- No port forwarding, no /etc/hosts needed for cross-host access
+- virt-install uses `--network bridge=br0` — no libvirt network is created
 
 **Example:**
-- Host A: 192.168.1.146/24 → Hub VM: 192.168.1.80
-- Host B: 192.168.1.148/24 → Spoke VM: 192.168.1.81
-- Both VMs reachable from any LAN device via real IPs
+- Host A: bridge br0 → Hub VM at `BRIDGE_VM_IP=192.168.1.80`
+- Host B: bridge br0 → Spoke VM at `BRIDGE_VM_IP=192.168.1.81`
+- Both VMs reachable from any LAN device
 
 **Requirements:**
 - Wired ethernet (WiFi APs reject bridged traffic)
-- /24 subnet (255.255.255.0)
-- IPs .80-.89 available (outside DHCP pool)
+- Linux bridge br0 set up on host (see README)
+- `nmstate` package installed (used by openshift-install to validate NMState config)
+- `BRIDGE_VM_IP` set in env file — must be unique across all hosts on the LAN
 
-**Limitations:**
-- Assumes /24 subnet (uses first 3 octets of host IP)
-- No automatic subnet detection
-- User must reserve .80-.89 in router configuration
-- Will not work on /16, /25, or other subnet sizes
+**Assumptions (not validated):**
+- Gateway is `<first 3 octets of BRIDGE_VM_IP>.1` (e.g. 192.168.1.1)
+- DNS server is the gateway
+- Subnet is /24 — prefix-length 24 is hardcoded in NMState config
+- VM network interface name is `enp1s0` (default for KVM virtio)
 
-### Same-host inter-cluster connectivity
+**Post-install (manual on other hosts):**
+- Add /etc/hosts entries (printed at end of install)
+- Copy kubeconfig via scp (printed at end of install)
 
-When multiple clusters exist on the same host, shiftlet automatically adds iptables FORWARD ACCEPT rules between their bridge interfaces (tagged `shiftlet-interbridge`). This allows VMs on different libvirt NAT networks to route through the host. Rules are synced on every create and delete.
-
-### Persistence
-
-IP forwarding (`net.ipv4.ip_forward=1`) is persisted to `/etc/sysctl.d/99-shiftlet.conf` on first `expose`. The iptables rules themselves are not automatically persisted across reboots.
-
-Options to persist iptables rules:
-- **iptables-save / restore service** — `sudo iptables-save > /etc/sysconfig/iptables` and enable `iptables.service`
-- **firewalld** — re-add as `firewall-cmd --permanent --direct` rules (note: shiftlet warns if firewalld is active, as it may flush iptables rules on reload)
-- **Re-run `shiftlet expose <name>`** — idempotent, safe to run again after reboot
 
 ## Install flow
 
@@ -113,18 +98,22 @@ Options to persist iptables rules:
     ├─ assign cluster ID → derive all identifiers
     ├─ register cluster in /var/lib/shiftlet/clusters  ← safe to 'delete' from here
     ├─ extract openshift-install from the release payload (oc adm release extract)
-    ├─ define + start libvirt NAT network (with autostart)
-    ├─ add /etc/hosts entries
+    ├─ NAT mode:  define + start libvirt NAT network (with autostart)
+    │  bridge mode: validate br0 exists and is UP
+    ├─ add /etc/hosts entries (VM IP → cluster domains)
     ├─ write agent-config.yaml + install-config.yaml
+    │  bridge mode: agent-config.yaml includes NMState static IP config
     ├─ build agent ISO  (openshift-install agent create image)
+    ├─ NAT mode:  virt-install --network network=shiftlet-<name>
+    │  bridge mode: virt-install --network bridge=br0
     ├─ launch VM via virt-install (with autostart)
     ├─ wait for OCP install  (openshift-install agent wait-for install-complete)
-    ├─ copy kubeconfig → /var/lib/shiftlet/dev/kubeconfig
+    ├─ copy kubeconfig → /var/lib/shiftlet/<name>/kubeconfig
     ├─ extract + store kubeadmin-password
     └─ detach ISO from VM
 ```
 
-The slot is registered before any external resources are created. If `create` fails at any point, `shiftlet delete <name>` can fully clean up.
+The cluster ID is registered before any external resources are created. If `create` fails at any point, `shiftlet delete <name>` can fully clean up.
 
 ## Version selection
 
@@ -152,23 +141,15 @@ The slot is registered before any external resources are created. If `create` fa
 ## Prerequisites
 
 - Linux host with libvirt/KVM (`virt-install`, `virsh`, `qemu-kvm`)
-  - Fedora: `sudo dnf install @virtualization`
+  - Fedora: `sudo dnf install @virtualization virt-install`
 - `sudo` access (for virsh, /etc/hosts, iptables, /var/lib/shiftlet)
-- A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret)
-  - Set `REGISTRY_AUTH_FILE` to its path, or place it at `~/.docker/config.json`
+- A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret) — path set via `PULL_SECRET` in env file
 - `oc` client (auto-installed if missing)
-- `gh` CLI — only for `--version` flag (install from https://cli.github.com)
+- `gh` CLI — only for version resolution (install from https://cli.github.com)
 - Sufficient resources per cluster:
-  - 8 vCPUs, 20 GB RAM, 100 GB disk (full cluster with operators)
-  - 8 vCPUs, 12 GB RAM, 100 GB disk (plain OCP, no heavy operators)
-
-## Installation
-
-`shiftlet.sh` is a self-contained shell script with no build step. Copy or symlink it somewhere on your `$PATH`:
-
-```bash
-ln -s /path/to/shiftlet.sh ~/.local/bin/shiftlet
-```
+  - 8 vCPUs, 25 GB RAM, 100 GB disk (hub with MCE/ACM operators)
+  - 8 vCPUs, 16 GB RAM, 100 GB disk (spoke / plain OCP)
+- **Bridge mode only**: `nmstate` package, Linux bridge `br0` — see README
 
 ## Future work
 

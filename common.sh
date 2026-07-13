@@ -59,6 +59,9 @@ load_env() {
 
     # Bridge mode validation
     if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        [[ -n "${BRIDGE_VM_IP:-}" ]] || die "BRIDGE_VM_IP must be set in the env file when using bridge mode (e.g. BRIDGE_VM_IP=192.168.1.80)"
+        command -v nmstatectl &>/dev/null \
+            || die "bridge mode requires nmstate package: sudo dnf install nmstate"
         validate_bridge_mode >/dev/null
     fi
 }
@@ -132,92 +135,14 @@ find_iso() {
     echo "$iso"
 }
 
-# ── port forwarding ───────────────────────────────────────────────────────────
-apply_fw_rules() {
-    local name=$1 vmIP=$2
-
-    if systemctl is-active --quiet firewalld 2>/dev/null; then
-        echo "warning: firewalld is active — iptables rules may be flushed on reload" >&2
-        echo "         consider stopping firewalld or adding equivalent firewall-cmd rules" >&2
-    fi
-
-    info "Setting up port forwarding: LAN -> ${vmIP}"
-
-    echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-shiftlet.conf >/dev/null
-    sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
-
-    local tag="shiftlet-${name}"
-    for port in 80 443 6443; do
-        sudo iptables -t nat -A PREROUTING \
-            -p tcp --dport "$port" \
-            -m comment --comment "$tag" \
-            -j DNAT --to-destination "${vmIP}:${port}"
-        sudo iptables -t nat -A POSTROUTING \
-            -d "$vmIP" -p tcp --dport "$port" \
-            -m comment --comment "$tag" \
-            -j MASQUERADE
-        sudo iptables -A FORWARD \
-            -d "$vmIP" -p tcp --dport "$port" \
-            -m comment --comment "$tag" \
-            -j ACCEPT
-    done
-}
-
-remove_fw_rules() {
-    local name=$1
-    info "Removing port forwarding for '${name}'"
-    local tmp
-    tmp=$(mktemp)
-    sudo iptables-save | { grep -v -- "shiftlet-${name}" || true; } > "$tmp"
-    sudo iptables-restore < "$tmp"
-    rm -f "$tmp"
-}
-
-sync_inter_bridge_rules() {
-    if [[ ! -f "$REGISTRY_FILE" ]] || [[ ! -s "$REGISTRY_FILE" ]]; then
-        return
-    fi
-
-    # Remove all existing inter-bridge rules
-    local tmp
-    tmp=$(mktemp)
-    sudo iptables-save | { grep -v "shiftlet-interbridge" || true; } > "$tmp"
-    sudo iptables-restore < "$tmp"
-    rm -f "$tmp"
-
-    # Collect active bridges
-    local bridges=()
-    local _slot _name
-    while IFS='=' read -r _slot _name; do
-        [[ -n "$_slot" && -n "$_name" ]] || continue
-        bridges+=("$(bridge_for "$_slot")")
-    done < "$REGISTRY_FILE"
-
-    # If 2+ clusters, enable ip_forward and add pairwise ACCEPT rules
-    if [[ ${#bridges[@]} -ge 2 ]]; then
-        info "Enabling inter-cluster routing for ${#bridges[@]} clusters"
-        echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/99-shiftlet.conf >/dev/null
-        sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
-        for (( i=0; i<${#bridges[@]}; i++ )); do
-            for (( j=i+1; j<${#bridges[@]}; j++ )); do
-                sudo iptables -I FORWARD \
-                    -i "${bridges[$i]}" -o "${bridges[$j]}" \
-                    -m comment --comment "shiftlet-interbridge" -j ACCEPT
-                sudo iptables -I FORWARD \
-                    -i "${bridges[$j]}" -o "${bridges[$i]}" \
-                    -m comment --comment "shiftlet-interbridge" -j ACCEPT
-            done
-        done
-    fi
-}
 
 # ── connection instructions ───────────────────────────────────────────────────
 print_connection_info() {
     local name=$1
-    local domain lanIP hostname_fqdn kc password
+    local domain lanIP vmIP kc password cid
     domain=$(domain_for "$name")
     lanIP=$(lan_ip)
-    hostname_fqdn=$(hostname)
+    cid=$(get_cluster_id "$name")
     kc=$(kubeconfig "$name")
     password="<not yet available>"
     [[ -f "${DATA_DIR}/${name}/kubeadmin-password" ]] \
@@ -227,13 +152,6 @@ print_connection_info() {
     echo "------------------------------------------------------------"
     echo "Cluster '${name}' is ready"
     echo ""
-    echo "  This host: ${hostname_fqdn} (${lanIP})"
-    echo ""
-    echo "  To reach this cluster from another machine, add to /etc/hosts:"
-    echo "    ${lanIP}  api.${domain}"
-    echo "    ${lanIP}  console-openshift-console.apps.${domain}"
-    echo "    ${lanIP}  oauth-openshift.apps.${domain}"
-    echo ""
     echo "  Kubeconfig:"
     echo "    export KUBECONFIG=${kc}"
     echo ""
@@ -241,8 +159,24 @@ print_connection_info() {
     echo "    https://console-openshift-console.apps.${domain}"
     echo "    Login: kubeadmin / ${password}"
     echo ""
-    echo "  Note: iptables rules do not survive reboots."
-    echo "        Re-apply after reboot with: ./expose.sh ${name}"
+
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        local vmIP="${BRIDGE_VM_IP}"
+        echo "  VM IP on LAN: ${vmIP}"
+        echo ""
+        echo "  To access this cluster from another host on the LAN:"
+        echo "    1. Add to /etc/hosts on the other host:"
+        echo "         ${vmIP}  api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}"
+        echo ""
+        echo "    2. Copy kubeconfig to the other host:"
+        echo "         scp ${kc} <user>@<other-host>:~/${name}-kubeconfig"
+        echo "         export KUBECONFIG=~/${name}-kubeconfig"
+        echo "         # To persist across shell sessions:"
+        echo "         echo 'export KUBECONFIG=~/${name}-kubeconfig' >> ~/.bashrc"
+        echo "         source ~/.bashrc"
+    else
+        echo "  Cluster is accessible from this host only (NAT mode)."
+    fi
     echo "------------------------------------------------------------"
 }
 
@@ -403,15 +337,13 @@ create_cluster() {
 
     local cid subnet vmIP vmMAC netMAC bridge network hostname domain assets baseDomain ocp_arch
     cid=$(next_cluster_id)
-    subnet=$(subnet_for "$cid")
     if [[ "$NETWORK_MODE" == "bridge" ]]; then
-        # Bridge mode: VM on LAN subnet
-        local lanIP lanSubnet
-        lanIP=$(lan_ip)
-        lanSubnet=$(echo "$lanIP" | cut -d. -f1-3)
-        vmIP="${lanSubnet}.$((80 + cid))"
+        # Bridge mode: use explicit VM IP from env file
+        vmIP="$BRIDGE_VM_IP"
+        subnet=$(echo "$vmIP" | cut -d. -f1-3)
     else
         # NAT mode: isolated subnet
+        subnet=$(subnet_for "$cid")
         vmIP=$(vm_ip_for "$cid")
     fi
     vmMAC=$(vm_mac_for "$cid")
@@ -467,13 +399,54 @@ create_cluster() {
     fi
 
     info "Writing install configs"
-    cat > "${assets}/agent-config.yaml" << EOF
+
+    # Build agent-config with NMState for static IP in bridge mode
+    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+        cat > "${assets}/agent-config.yaml" << EOF
+apiVersion: v1alpha1
+metadata:
+  name: ${name}
+  namespace: shiftlet
+rendezvousIP: ${vmIP}
+hosts:
+  - hostname: ${hostname}
+    interfaces:
+      - name: enp1s0
+        macAddress: ${vmMAC}
+    networkConfig:
+      interfaces:
+        - name: enp1s0
+          type: ethernet
+          state: up
+          mac-address: ${vmMAC}
+          ipv4:
+            enabled: true
+            address:
+              - ip: ${vmIP}
+                prefix-length: 24
+            dhcp: false
+          ipv6:
+            enabled: false
+      dns-resolver:
+        config:
+          server:
+            - ${subnet}.1
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: ${subnet}.1
+            next-hop-interface: enp1s0
+            table-id: 254
+EOF
+    else
+        cat > "${assets}/agent-config.yaml" << EOF
 apiVersion: v1alpha1
 metadata:
   name: ${name}
   namespace: shiftlet
 rendezvousIP: ${vmIP}
 EOF
+    fi
 
     local pullSecret sshKey capYaml
     pullSecret=$(cat "$pullSecretFile")
@@ -570,12 +543,8 @@ EOF
     local elapsed=$(( ($(date +%s) - start) / 60 ))
     echo ""
     echo "Installed in ${elapsed} minutes"
-    echo ""
-    echo "  Kubeconfig:"
-    echo "    export KUBECONFIG=$(kubeconfig "$name")"
-    echo ""
-    echo "  To expose on LAN or enable inter-cluster connectivity:"
-    echo "    ./expose.sh ${name}"
+
+    print_connection_info "$name"
 }
 
 # ── delete ────────────────────────────────────────────────────────────────────
@@ -600,8 +569,6 @@ delete_cluster() {
         die "cluster '${name}' not found"
     fi
 
-    remove_fw_rules "$name"
-
     if sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$"; then
         info "Destroying VM ${hostname}"
         sudo virsh list --name 2>/dev/null | grep -q "^${hostname}$" \
@@ -621,8 +588,6 @@ delete_cluster() {
     [[ -d "$assets" && "$assets" == *"shiftlet-"* ]] && rm -rf "$assets" || true
     sudo rm -rf "${DATA_DIR}/${name}"
     [[ -n "$cid" ]] && sudo sed -i "/^${cid}=${name}$/d" "$REGISTRY_FILE"
-
-    sync_inter_bridge_rules
 
     info "Cluster '${name}' deleted"
 }

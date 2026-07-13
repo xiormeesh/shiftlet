@@ -2,7 +2,7 @@
 
 Local Single Node OpenShift (SNO) clusters for development and testing. Wraps the [agent-based installer](https://docs.openshift.com/container-platform/latest/installing/installing_with_agent_based_installer/preparing-to-install-with-agent-based-installer.html) and libvirt/KVM into simple scripts with a clean lifecycle.
 
-Supports multiple clusters on the same host and cross-host cluster connectivity via port forwarding.
+Supports multiple clusters on the same host and cross-host cluster connectivity via bridge networking.
 
 ## Prerequisites
 
@@ -28,7 +28,7 @@ vim dev.env
 ./create.sh dev.env
 ```
 
-This takes ~40 minutes. The cluster is only accessible from the host machine by default.
+This takes ~40 minutes. In NAT mode (default), the cluster is only accessible from the host machine. In bridge mode, it is accessible from any device on the LAN.
 
 3. Access the cluster:
 
@@ -45,7 +45,6 @@ The kubeadmin password is saved at `/var/lib/shiftlet/<name>/kubeadmin-password`
 |--------|-------|-------------|
 | `create.sh` | `./create.sh <cluster.env>` | Create a cluster from an env file |
 | `delete.sh` | `./delete.sh <name\|cluster.env>` | Delete a cluster and all its resources |
-| `expose.sh` | `./expose.sh <name\|cluster.env>` | Set up LAN port forwarding and inter-cluster connectivity |
 | `list.sh` | `./list.sh` | List all clusters with connection info |
 | `get_latest.sh` | `./get_latest.sh [X.Y\|latest]` | Print the latest stable OCP version |
 | `get_capabilities.sh` | `./get_capabilities.sh` | Print known OCP capabilities for env files |
@@ -83,7 +82,7 @@ Creates isolated virtual networks per cluster. Works on WiFi or wired ethernet.
 - VM gets private IP on isolated subnet (192.168.133.x, 192.168.134.x, etc.)
 - Host can reach VM, LAN cannot
 - Multiple clusters on same host work fine (each gets isolated network)
-- Cross-host multi-cluster requires port forwarding (see firewalld-expose.sh)
+- /etc/hosts entries are added automatically on the host
 
 Use NAT for:
 - Single cluster development
@@ -94,32 +93,54 @@ Use NAT for:
 
 Connects VMs directly to your LAN via a Linux bridge. Requires wired ethernet and bridge setup.
 
-- VM gets real LAN IP (192.168.1.80, 192.168.1.81, etc.)
-- VM reachable from any device on LAN, including the host
+- VM gets explicit LAN IP (set via `BRIDGE_VM_IP` in env file)
+- VM reachable from any device on the LAN, including the host
 - Cross-host multi-cluster works without port forwarding
-- Assumes /24 subnet, IPs .80-.89 available
+- /etc/hosts added automatically on the install host; must be added manually on other hosts (printed at end of install)
 
 Use bridge for:
 - Multi-cluster across physical hosts
 - Hub-spoke testing with hub on host A, spoke on host B
 
-**Requirements:**
-- Wired ethernet connection (eth*, enp*, ens*, eno*)
+**Prerequisites (one-time per host):**
+- Wired ethernet connection
 - Linux bridge device (br0) — see [Bridge Setup](#bridge-setup-for-bridge-mode) below
+- `nmstate` package: `sudo dnf install nmstate`
 - /24 LAN subnet (e.g., 192.168.1.0/24)
-- IPs .80-.89 reserved/available (not in DHCP pool)
+- Chosen VM IPs outside your router's DHCP pool
 
-**Setup:**
+**Env file settings:**
 ```bash
-# 1. Set up bridge (one-time, see Bridge Setup section below)
-# 2. Reserve IPs .80-.89 in your router's DHCP settings
-# 3. Create cluster with bridge mode
-NETWORK_MODE=bridge ./create.sh hub.env
+NETWORK_MODE=bridge
+BRIDGE_VM_IP=192.168.1.80  # unique per cluster across all hosts on LAN
 ```
+
+**Then:**
+```bash
+./create.sh hub.env
+```
+
+After install, shiftlet prints the /etc/hosts line and `scp` command needed on the other host.
+
+## Bridge Mode Assumptions and Limitations
+
+Bridge mode makes the following assumptions. These are documented here, not validated by shiftlet.
+
+- **Gateway is `<first 3 octets of BRIDGE_VM_IP>.1`** — e.g. for `192.168.1.80` the gateway is `192.168.1.1`. If your router uses a different IP, the VM will have no internet access.
+- **DNS server is the gateway** — same IP as the gateway. If your network uses a separate DNS server, you will need to modify the NMState config in `common.sh`.
+- **Subnet is /24** — prefix length 24 is hardcoded. Networks with /16, /25, or other sizes will not work correctly.
+- **VM network interface is `enp1s0`** — the NMState config targets this interface name. This is the default for KVM VMs with virtio; different virt-install configurations may use a different name.
+- **Bridge device is named `br0`** — hardcoded; alternative bridge names are not supported.
 
 ## Bridge Setup (for Bridge Mode)
 
-Bridge mode requires a Linux bridge device (br0) that connects VMs to your physical LAN. This is a **one-time setup per host**.
+Bridge mode requires a Linux bridge device (br0) and the `nmstate` package. This is a **one-time setup per host**.
+
+### Install nmstate
+
+```bash
+sudo dnf install nmstate
+```
 
 ### Creating the Bridge with NetworkManager
 
@@ -190,51 +211,32 @@ sudo nmcli connection delete bridge-slave-eth0
 sudo nmcli connection up "Wired connection 1"
 ```
 
-## Exposing clusters
-
-By default, clusters are only accessible from the host machine. To make a cluster reachable from other machines on the LAN or enable connectivity between clusters on the same host, run:
-
-```bash
-./expose.sh <name>
-```
-
-This sets up:
-- **iptables DNAT rules** forwarding ports 80, 443, 6443 from your LAN IP to the cluster VM
-- **Inter-bridge routing** if multiple clusters exist on the same host (so VMs on different libvirt networks can reach each other)
-
-Port forwarding and inter-bridge rules **do not survive reboots**. Re-run `./expose.sh <name>` for each cluster after a reboot.
-
 ## Cross-host multi-cluster setup
 
-**With bridge mode (recommended):**
+Requires bridge mode on both hosts.
 
-1. Ensure both hosts on wired ethernet, same LAN
-2. Reserve IPs .80-.89 in router DHCP settings
-3. Create clusters with `NETWORK_MODE=bridge`:
+**On each host (one-time):**
+1. Set up the Linux bridge (see [Bridge Setup](#bridge-setup-for-bridge-mode))
+2. Install nmstate: `sudo dnf install nmstate`
+3. Reserve VM IPs in your router (outside DHCP pool)
 
+**Install clusters:**
 ```bash
-# Host A:
-NETWORK_MODE=bridge ./create.sh hub.env
-
-# Host B:
-NETWORK_MODE=bridge ./create.sh spoke.env
-```
-
-4. Clusters accessible from both hosts via LAN IPs (no /etc/hosts needed):
-   - Hub: 192.168.1.80
-   - Spoke: 192.168.1.81
-
-**With NAT mode (complex, requires firewalld):**
-
-For NAT mode cross-host setup, see firewalld-expose.sh script. Requires iptables/firewalld port forwarding rules and /etc/hosts entries. Bridge mode is simpler.
-
-## Same-host multi-cluster
-
-```bash
+# Host A (hub.env has NETWORK_MODE=bridge, BRIDGE_VM_IP=192.168.1.80):
 ./create.sh hub.env
+
+# Host B (spoke.env has NETWORK_MODE=bridge, BRIDGE_VM_IP=192.168.1.81):
 ./create.sh spoke.env
-./expose.sh hub
-./expose.sh spoke
 ```
 
-After exposing, both VMs can reach each other through the host via inter-bridge forwarding rules.
+**After each install, shiftlet prints:**
+- The /etc/hosts line to add on the other host
+- The `scp` command to copy the kubeconfig to the other host
+
+**What's automatic (on the install host):**
+- /etc/hosts entries for the cluster domains → VM IP
+
+**What's manual (on the other host):**
+- Add the printed /etc/hosts line
+- Copy kubeconfig with the printed scp command
+

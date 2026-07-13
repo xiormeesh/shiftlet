@@ -7,7 +7,7 @@ Read `README.md` for usage, env file format, and networking setup. Read `ARCHITE
 ## Project structure
 
 - `common.sh` — all logic: cluster registry, networking, lifecycle, version resolution
-- `create.sh`, `delete.sh`, `expose.sh`, `list.sh` — thin wrappers that source common.sh
+- `create.sh`, `delete.sh`, `list.sh` — thin entry points that source common.sh
 - `get_latest.sh`, `get_capabilities.sh` — info-retrieval scripts
 - `hub.env.example` — example env file with capabilities reference
 - `*.env` — user's cluster profiles (gitignored)
@@ -19,14 +19,13 @@ Read `README.md` for usage, env file format, and networking setup. Read `ARCHITE
 - Minimum 16 GB RAM per cluster (installer-enforced for master nodes).
 - State lives at `/var/lib/shiftlet/` (persistent) and `/tmp/shiftlet-<name>/` (install-time assets).
 - Cluster registry file: `/var/lib/shiftlet/clusters` (one `id=name` line per cluster).
-- iptables rules do not survive reboots — re-run `expose.sh` after reboot.
+- Bridge mode: br0 and its autostart survive reboots (managed by NetworkManager).
 
 ## Common tasks
 
-- **Check install progress**: Watch the `create.sh` output (installer logs to stdout)
-- **SSH into a cluster VM**: `ssh core@192.168.(133+id).80`
+- **Check install progress**: Watch the `create.sh` output or tail `/tmp/shiftlet-create-<timestamp>.log`
 - **Check cluster health**: `KUBECONFIG=/var/lib/shiftlet/<name>/kubeconfig oc get co`
-- **Debug stuck install**: SSH into VM, check `journalctl -b --no-pager | tail -40`
+- **Debug stuck install**: Open virt-viewer to see the VM console: `virt-viewer --connect qemu:///system shiftlet-<name>`
 
 ## Testing changes
 
