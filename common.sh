@@ -532,6 +532,7 @@ EOF
     info "Saving kubeconfig"
     sudo cp "${assets}/auth/kubeconfig" "${DATA_DIR}/${name}/kubeconfig"
     sudo chmod 644 "${DATA_DIR}/${name}/kubeconfig"
+    echo "$vmIP" | sudo tee "${DATA_DIR}/${name}/vmip" >/dev/null
 
     info "Saving kubeadmin password"
     sudo cp "${assets}/auth/kubeadmin-password" "${DATA_DIR}/${name}/kubeadmin-password"
@@ -599,13 +600,25 @@ list_clusters() {
         return
     fi
 
-    printf "%-15s  %-3s  %-22s  %-45s  %s\n" NAME ID SUBNET KUBECONFIG PASSWORD
-    while IFS='=' read -r cid name; do
+    while IFS='=' read -r cid name || [[ -n "$cid" ]]; do
         [[ -n "$cid" && -n "$name" ]] || continue
-        local password="-"
+
+        local domain vmIP password kubeconf console mode
+        domain=$(domain_for "$name")
+        kubeconf=$(kubeconfig "$name")
+        console="https://console-openshift-console.apps.${domain}"
+        password="-"
         [[ -f "${DATA_DIR}/${name}/kubeadmin-password" ]] \
             && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
-        printf "%-15s  %-3s  %-22s  %-45s  %s\n" \
-            "$name" "$cid" "$(subnet_for "$cid").0/24" "$(kubeconfig "$name")" "$password"
+
+        vmIP=$(cat "${DATA_DIR}/${name}/vmip" 2>/dev/null || echo "unknown")
+
+        echo "------------------------------------------------------------"
+        echo "  Name:      ${name}"
+        echo "  VM IP:     ${vmIP}"
+        echo "  Console:   ${console}"
+        echo "  Kubeconfig: export KUBECONFIG=${kubeconf}"
+        echo "  Login:     kubeadmin / ${password}"
     done < "$REGISTRY_FILE"
+    echo "------------------------------------------------------------"
 }
