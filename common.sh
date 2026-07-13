@@ -533,6 +533,7 @@ EOF
     sudo cp "${assets}/auth/kubeconfig" "${DATA_DIR}/${name}/kubeconfig"
     sudo chmod 644 "${DATA_DIR}/${name}/kubeconfig"
     echo "$vmIP" | sudo tee "${DATA_DIR}/${name}/vmip" >/dev/null
+    echo "$NETWORK_MODE" | sudo tee "${DATA_DIR}/${name}/network_mode" >/dev/null
 
     info "Saving kubeadmin password"
     sudo cp "${assets}/auth/kubeadmin-password" "${DATA_DIR}/${name}/kubeadmin-password"
@@ -612,9 +613,12 @@ list_clusters() {
             && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
 
         vmIP=$(cat "${DATA_DIR}/${name}/vmip" 2>/dev/null || echo "unknown")
+        local mode
+        mode=$(cat "${DATA_DIR}/${name}/network_mode" 2>/dev/null || echo "unknown")
 
         echo "------------------------------------------------------------"
         echo "  Name:      ${name}"
+        echo "  Mode:      ${mode}"
         echo "  VM IP:     ${vmIP}"
         echo "  Console:   ${console}"
         echo "  Kubeconfig: export KUBECONFIG=${kubeconf}"
