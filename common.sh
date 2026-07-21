@@ -514,6 +514,7 @@ EOF
         --boot hd,cdrom \
         --import \
         --network "$network_param" \
+        --graphics none \
         --os-variant rhel9-unknown \
         --noautoconsole
 
