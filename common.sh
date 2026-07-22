@@ -614,11 +614,19 @@ list_clusters() {
             && password=$(sudo cat "${DATA_DIR}/${name}/kubeadmin-password")
 
         vmIP=$(cat "${DATA_DIR}/${name}/vmip" 2>/dev/null || echo "unknown")
-        local mode
+        local mode vmState apiStatus
         mode=$(cat "${DATA_DIR}/${name}/network_mode" 2>/dev/null || echo "unknown")
+        vmState=$(sudo virsh domstate "$(vm_hostname "$name")" 2>/dev/null || echo "not found")
+        if [[ "$vmState" == "running" ]]; then
+            apiStatus=$(curl -sk --max-time 3 "https://api.${domain}:6443/healthz" 2>/dev/null || echo "unreachable")
+        else
+            apiStatus="-"
+        fi
 
         echo "------------------------------------------------------------"
         echo "  Name:      ${name}"
+        echo "  VM status: ${vmState}"
+        echo "  API:       ${apiStatus}"
         echo "  Mode:      ${mode}"
         echo "  VM IP:     ${vmIP}"
         echo "  Console:   ${console}"
