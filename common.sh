@@ -83,8 +83,10 @@ next_cluster_id() {
 # ── identifier derivations ────────────────────────────────────────────────────
 subnet_for()   { echo "${SUBNET_BASE}.$(( SUBNET_THIRD_BASE + $1 ))"; }
 vm_ip_for()    { echo "$(subnet_for "$1").${VM_IP_SUFFIX}"; }
-vm_mac_for()   { printf "52:54:00:93:72:%02x" $(( 0x25 + $1 )); }
-net_mac_for()  { printf "52:54:00:94:43:%02x" $(( 0x21 + $1 )); }
+# Random last 3 bytes, seeded from hostname + cid to be stable across re-runs on the same host
+# but different across hosts. 52:54:00 is the QEMU/KVM OUI prefix.
+vm_mac_for()   { local seed; seed=$(echo "vm-$(hostname)-$1" | md5sum | cut -c1-6); printf "52:54:00:%s:%s:%s" "${seed:0:2}" "${seed:2:2}" "${seed:4:2}"; }
+net_mac_for()  { local seed; seed=$(echo "net-$(hostname)-$1" | md5sum | cut -c1-6); printf "52:54:00:%s:%s:%s" "${seed:0:2}" "${seed:2:2}" "${seed:4:2}"; }
 bridge_for()   { printf "virbr-shl%d" "$1"; }
 net_name()     { echo "shiftlet-${1}"; }
 vm_hostname()  { echo "shiftlet-${1}"; }
