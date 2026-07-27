@@ -57,6 +57,13 @@ load_env() {
         die "NETWORK_MODE must be 'NAT' or 'bridge', got: ${NETWORK_MODE}"
     fi
 
+    # Validate FEATURE_SET if provided
+    if [[ -n "${FEATURE_SET:-}" ]]; then
+        if [[ ! "$FEATURE_SET" =~ ^(TechPreviewNoUpgrade|DevPreviewNoUpgrade|CustomNoUpgrade)$ ]]; then
+            die "FEATURE_SET must be TechPreviewNoUpgrade, DevPreviewNoUpgrade, or CustomNoUpgrade — got: ${FEATURE_SET}"
+        fi
+    fi
+
     # Bridge mode validation
     if [[ "$NETWORK_MODE" == "bridge" ]]; then
         [[ -n "${BRIDGE_VM_IP:-}" ]] || die "BRIDGE_VM_IP must be set in the env file when using bridge mode (e.g. BRIDGE_VM_IP=192.168.1.80)"
@@ -488,6 +495,10 @@ ${capYaml}
 pullSecret: '${pullSecret}'
 sshKey: ${sshKey}
 EOF
+
+    if [[ -n "${FEATURE_SET:-}" ]]; then
+        echo "featureSet: ${FEATURE_SET}" >> "${assets}/install-config.yaml"
+    fi
 
     info "Building install ISO"
     "${assets}/openshift-install" agent create image --dir="$assets" --log-level=debug
