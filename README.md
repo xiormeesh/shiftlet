@@ -69,9 +69,14 @@ VERSION=4.21.5
 MEMORY_GB=12
 PULL_SECRET=~/.config/openshift/pull-secret
 CAPABILITIES="Ingress Console"
+FEATURE_SET=TechPreviewNoUpgrade  # optional
 ```
 
-See [hub.env.example](hub.env.example) for all available capabilities with descriptions. Run `./get_capabilities.sh` for a quick list. Capabilities can be [enabled post-install](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installation_overview/cluster-capabilities) but not disabled.
+See [hub.env.example](hub.env.example) for all available options with descriptions.
+
+**Capabilities**: Run `./get_capabilities.sh` for a quick list. Capabilities can be [enabled post-install](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/installation_overview/cluster-capabilities) but not disabled.
+
+**FeatureSet**: Enables pre-GA features at install time. Valid values: `TechPreviewNoUpgrade` (beta-maturity), `DevPreviewNoUpgrade` (alpha-maturity), `CustomNoUpgrade` (individual gates, unsupported). Omit for a standard cluster. Once set, it is permanent and blocks minor version upgrades.
 
 Env files are gitignored — create your own based on [hub.env.example](hub.env.example). Typical profiles:
 
