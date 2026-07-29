@@ -66,7 +66,7 @@ Example `list.sh` output:
 ```bash
 NAME=dev
 VERSION=4.21.5
-MEMORY_GB=12
+MEMORY_GB=16
 PULL_SECRET=~/.config/openshift/pull-secret
 CAPABILITIES="Ingress Console"
 FEATURE_SET=TechPreviewNoUpgrade  # optional
