@@ -64,6 +64,12 @@ load_env() {
         fi
     fi
 
+    # Shared network validation
+    SHARED_NETWORK="${SHARED_NETWORK:-}"
+    if [[ -n "$SHARED_NETWORK" && "$NETWORK_MODE" == "bridge" ]]; then
+        die "SHARED_NETWORK and NETWORK_MODE=bridge are mutually exclusive"
+    fi
+
     # Bridge mode validation
     if [[ "$NETWORK_MODE" == "bridge" ]]; then
         [[ -n "${BRIDGE_VM_IP:-}" ]] || die "BRIDGE_VM_IP must be set in the env file when using bridge mode (e.g. BRIDGE_VM_IP=192.168.1.80)"
@@ -134,6 +140,58 @@ Add your wired interface to the bridge (see README.md)"
     fi
 
     echo "br0"
+}
+
+# ── shared network helpers ─────────────────────────────────────────────────────
+# Find next available VM IP on an existing network's subnet
+next_shared_vm_ip() {
+    local network=$1 subnet=$2
+    local last_octet=$VM_IP_SUFFIX
+    local existing
+    existing=$(sudo virsh net-dumpxml "$network" 2>/dev/null \
+        | grep -oP "ip='${subnet}\.\K\d+" || true)
+    for octet in $existing; do
+        (( octet > last_octet )) && last_octet=$octet
+    done
+    echo "${subnet}.$(( last_octet + 1 ))"
+}
+
+# Add a VM to an existing libvirt network (DHCP reservation + DNS)
+join_shared_network() {
+    local network=$1 vmIP=$2 vmMAC=$3 vmHostname=$4 domain=$5
+
+    info "Adding VM to existing network ${network}"
+
+    sudo virsh net-update "$network" add ip-dhcp-host \
+        "<host mac='${vmMAC}' name='${vmHostname}' ip='${vmIP}'/>" \
+        --live --config
+
+    sudo virsh net-update "$network" add dns-host \
+        "<host ip='${vmIP}'><hostname>master-0.${domain}</hostname><hostname>api.${domain}</hostname></host>" \
+        --live --config
+
+    info "Adding DNS entries to /etc/hosts"
+    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
+        | sudo tee -a /etc/hosts >/dev/null
+}
+
+# Remove a VM from a shared network (best-effort, network may already be gone)
+leave_shared_network() {
+    local shared_name=$1 vmIP=$2 vmMAC=$3 vmHostname=$4 domain=$5
+    local network
+    network=$(net_name "$shared_name")
+
+    if sudo virsh net-info "$network" &>/dev/null; then
+        info "Removing VM from shared network ${network}"
+        sudo virsh net-update "$network" delete ip-dhcp-host \
+            "<host mac='${vmMAC}' name='${vmHostname}' ip='${vmIP}'/>" \
+            --live --config 2>/dev/null || true
+        sudo virsh net-update "$network" delete dns-host \
+            "<host ip='${vmIP}'><hostname>master-0.${domain}</hostname><hostname>api.${domain}</hostname></host>" \
+            --live --config 2>/dev/null || true
+    else
+        info "Shared network ${network} not found, skipping cleanup"
+    fi
 }
 
 find_iso() {
@@ -346,7 +404,17 @@ create_cluster() {
 
     local cid subnet vmIP vmMAC netMAC bridge network hostname domain assets baseDomain ocp_arch
     cid=$(next_cluster_id)
-    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+    if [[ -n "$SHARED_NETWORK" ]]; then
+        # Shared network: join an existing cluster's NAT network
+        local shared_cid
+        shared_cid=$(get_cluster_id "$SHARED_NETWORK")
+        [[ -n "$shared_cid" ]] || die "SHARED_NETWORK '${SHARED_NETWORK}' is not registered — create it first"
+        subnet=$(subnet_for "$shared_cid")
+        network=$(net_name "$SHARED_NETWORK")
+        sudo virsh net-info "$network" &>/dev/null \
+            || die "shared network '${network}' is not running — start the ${SHARED_NETWORK} cluster first"
+        vmIP=$(next_shared_vm_ip "$network" "$subnet")
+    elif [[ "$NETWORK_MODE" == "bridge" ]]; then
         # Bridge mode: use explicit VM IP from env file
         vmIP="$BRIDGE_VM_IP"
         subnet=$(echo "$vmIP" | cut -d. -f1-3)
@@ -358,7 +426,7 @@ create_cluster() {
     vmMAC=$(vm_mac_for "$cid")
     netMAC=$(net_mac_for "$cid")
     bridge=$(bridge_for "$cid")
-    network=$(net_name "$name")
+    [[ -n "$SHARED_NETWORK" ]] || network=$(net_name "$name")
     hostname=$(vm_hostname "$name")
     domain=$(domain_for "$name")
     assets=$(assets_dir "$name")
@@ -368,7 +436,7 @@ create_cluster() {
     if [[ -d "$assets" ]] \
         || [[ -d "${DATA_DIR}/${name}" ]] \
         || sudo virsh list --all --name 2>/dev/null | grep -q "^${hostname}$" \
-        || sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; then
+        || { [[ -z "$SHARED_NETWORK" ]] && sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; }; then
         die "stale resources found for '${name}'; run: ./delete.sh ${name}"
     fi
 
@@ -400,7 +468,9 @@ create_cluster() {
         "$releaseImage"
 
     local bridge_device=""
-    if [[ "$NETWORK_MODE" == "bridge" ]]; then
+    if [[ -n "$SHARED_NETWORK" ]]; then
+        join_shared_network "$network" "$vmIP" "$vmMAC" "$hostname" "$domain"
+    elif [[ "$NETWORK_MODE" == "bridge" ]]; then
         bridge_device=$(validate_bridge_mode)
         create_bridge_network "$name" "$vmIP" "$vmMAC" "$bridge_device"
     else
@@ -545,9 +615,10 @@ EOF
 
     info "Saving kubeconfig"
     sudo cp "${assets}/auth/kubeconfig" "${DATA_DIR}/${name}/kubeconfig"
-    sudo chmod 644 "${DATA_DIR}/${name}/kubeconfig"
+    sudo chmod 646 "${DATA_DIR}/${name}/kubeconfig"
     echo "$vmIP" | sudo tee "${DATA_DIR}/${name}/vmip" >/dev/null
     echo "$NETWORK_MODE" | sudo tee "${DATA_DIR}/${name}/network_mode" >/dev/null
+    [[ -z "$SHARED_NETWORK" ]] || echo "$SHARED_NETWORK" | sudo tee "${DATA_DIR}/${name}/shared_network" >/dev/null
 
     info "Saving kubeadmin password"
     sudo cp "${assets}/auth/kubeadmin-password" "${DATA_DIR}/${name}/kubeadmin-password"
@@ -592,7 +663,15 @@ delete_cluster() {
         sudo virsh undefine "$hostname" --remove-all-storage
     fi
 
-    if sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; then
+    # Clean up network: if shared, just remove DHCP/DNS entries; otherwise destroy
+    local shared_net
+    shared_net=$(cat "${DATA_DIR}/${name}/shared_network" 2>/dev/null || true)
+    if [[ -n "$shared_net" ]]; then
+        local vmIP vmMAC
+        vmIP=$(cat "${DATA_DIR}/${name}/vmip" 2>/dev/null || true)
+        vmMAC=$(vm_mac_for "$(get_cluster_id "$name" || echo 0)")
+        [[ -n "$vmIP" ]] && leave_shared_network "$shared_net" "$vmIP" "$vmMAC" "$hostname" "$domain"
+    elif sudo virsh net-list --all --name 2>/dev/null | grep -q "^${network}$"; then
         info "Destroying network ${network}"
         sudo virsh net-list --name 2>/dev/null | grep -q "^${network}$" \
             && sudo virsh net-destroy "$network" || true

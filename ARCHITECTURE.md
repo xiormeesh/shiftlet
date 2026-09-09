@@ -22,16 +22,16 @@ shiftlet only provisions clusters. Any post-install configuration (operators, mu
 
 Every cluster gets a **name** (e.g. `hub`, `spoke`, `dev`). A cluster registry at `/var/lib/shiftlet/clusters` maps cluster IDs to names. All cluster identifiers are derived from the ID:
 
-| Identifier | NAT mode | Bridge mode |
-|------------|----------|-------------|
-| Subnet | `192.168.(133+id).0/24` | First 3 octets of `BRIDGE_VM_IP` |
-| VM IP | `192.168.(133+id).80` | `BRIDGE_VM_IP` (from env file) |
-| VM MAC | `52:54:00:93:72:(0x25+id)` | same |
-| libvirt network | `shiftlet-<name>` | not created |
-| VM hostname | `shiftlet-<name>` | same |
-| Domain | `<name>.shiftlet.local` | same |
-| Kubeconfig | `/var/lib/shiftlet/<name>/kubeconfig` | same |
-| Install assets | `/tmp/shiftlet-<name>/` (install-time only) | same |
+| Identifier | NAT mode | Shared network mode | Bridge mode |
+|------------|----------|---------------------|-------------|
+| Subnet | `192.168.(133+id).0/24` | same as parent cluster | First 3 octets of `BRIDGE_VM_IP` |
+| VM IP | `192.168.(133+id).80` | next available on parent subnet (.81, .82, ...) | `BRIDGE_VM_IP` (from env file) |
+| VM MAC | `52:54:00:xx:xx:xx` (derived from hostname+id) | same | same |
+| libvirt network | `shiftlet-<name>` | parent's network (e.g. `shiftlet-hub`) | not created |
+| VM hostname | `shiftlet-<name>` | same | same |
+| Domain | `<name>.shiftlet.local` | same | same |
+| Kubeconfig | `/var/lib/shiftlet/<name>/kubeconfig` | same | same |
+| Install assets | `/tmp/shiftlet-<name>/` (install-time only) | same | same |
 
 Up to 10 NAT clusters are supported per host (subnets `192.168.133.x` through `192.168.142.x`). Bridge mode clusters are limited by available LAN IPs.
 
@@ -48,9 +48,29 @@ host A ────── virbr-shlN (NAT) ── VM (192.168.13N.80)
              ✓
 ```
 
+### Shared network (same-host multi-cluster)
+
+Multiple clusters share the same libvirt NAT network. The recommended configuration for running hub + spoke on a single host. Works on WiFi or wired ethernet.
+
+```
+host A ────── virbr-shl0 (NAT) ─┬─ Hub VM  (192.168.133.80)
+             ✓                  └─ Spoke VM (192.168.133.81)
+```
+
+**How it works:**
+- First cluster creates a NAT network as usual
+- Second cluster sets `SHARED_NETWORK=<first-cluster-name>` in its env file
+- `join_shared_network()` adds a DHCP host reservation and DNS entries to the existing libvirt network via `virsh net-update`
+- VM gets an IP via DHCP from the shared network's dnsmasq (next sequential IP after .80)
+- virt-install uses `--network network=<parent-network-name>`
+- Both VMs are on the same L2 bridge — direct communication, no firewall rules needed
+- On delete, only the DHCP/DNS entries are removed; the parent network stays intact
+
+**Persisted state:** `/var/lib/shiftlet/<name>/shared_network` stores the parent cluster name so delete knows to clean up entries rather than destroy the network.
+
 ### LAN access (bridge mode)
 
-See bridge mode section below. NAT mode is single-host only.
+See bridge mode section below.
 
 ### Bridge mode (experimental)
 
@@ -101,14 +121,15 @@ host B ── (LAN) ── br0 ── VM (192.168.1.80)
     ├─ assign cluster ID → derive all identifiers
     ├─ register cluster in /var/lib/shiftlet/clusters  ← safe to 'delete' from here
     ├─ extract openshift-install from the release payload (oc adm release extract)
-    ├─ NAT mode:  define + start libvirt NAT network (with autostart)
-    │  bridge mode: validate br0 exists and is UP
+    ├─ NAT mode:     define + start libvirt NAT network (with autostart)
+    │  shared mode:  add DHCP reservation + DNS entries to parent network
+    │  bridge mode:  validate br0 exists and is UP
     ├─ add /etc/hosts entries (VM IP → cluster domains)
     ├─ write agent-config.yaml + install-config.yaml
     │  bridge mode: agent-config.yaml includes NMState static IP config
     ├─ build agent ISO  (openshift-install agent create image)
-    ├─ NAT mode:  virt-install --network network=shiftlet-<name>
-    │  bridge mode: virt-install --network bridge=br0
+    ├─ NAT/shared:   virt-install --network network=shiftlet-<name>
+    │  bridge mode:  virt-install --network bridge=br0
     ├─ launch VM via virt-install (with autostart)
     ├─ wait for OCP install  (openshift-install agent wait-for install-complete)
     ├─ copy kubeconfig → /var/lib/shiftlet/<name>/kubeconfig
@@ -134,6 +155,9 @@ The cluster ID is registered before any external resources are created. If `crea
   dev/
     kubeconfig             # cluster kubeconfig (readable by installing user)
     kubeadmin-password     # kubeadmin login password
+    vmip                   # VM IP address
+    network_mode           # NAT or bridge
+    shared_network         # (optional) parent cluster name for shared network mode
   hub/
     kubeconfig
     ...

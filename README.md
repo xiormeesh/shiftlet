@@ -2,7 +2,7 @@
 
 Local Single Node OpenShift (SNO) clusters for development and testing. Wraps the [agent-based installer](https://docs.openshift.com/container-platform/latest/installing/installing_with_agent_based_installer/preparing-to-install-with-agent-based-installer.html) and libvirt/KVM into simple scripts with a clean lifecycle.
 
-Supports multiple clusters on the same host and cross-host cluster connectivity via bridge networking.
+Supports multiple clusters on the same host (shared networking) and cross-host cluster connectivity via bridge networking.
 
 ## Prerequisites
 
@@ -88,7 +88,7 @@ Minimum 16 GB RAM per cluster — the installer enforces this for master/control
 
 ## Network Modes
 
-Shiftlet supports two network modes via the `NETWORK_MODE` env variable:
+Shiftlet supports three network configurations:
 
 ### NAT Mode (Default)
 
@@ -96,13 +96,34 @@ Creates isolated virtual networks per cluster. Works on WiFi or wired ethernet.
 
 - VM gets private IP on isolated subnet (192.168.133.x, 192.168.134.x, etc.)
 - Host can reach VM, LAN cannot
-- Multiple clusters on same host work fine (each gets isolated network)
 - /etc/hosts entries are added automatically on the host
 
 Use NAT for:
 - Single cluster development
 - WiFi-based setups
 - Isolated testing
+
+### Shared Network Mode
+
+Multiple clusters share the same libvirt NAT network. The recommended way to run hub + spoke (or any multi-cluster setup) on a single host. Works on WiFi or wired ethernet.
+
+- Second cluster joins the first cluster's NAT network (same bridge, same subnet)
+- All VMs can communicate directly at L2 — no firewall rules needed
+- Host can reach all VMs, all VMs can reach the internet via NAT
+- DHCP reservations and DNS entries are added to the existing network automatically
+- IPs are assigned sequentially (.80, .81, .82, ...)
+
+Use shared network for:
+- Hub + spoke on the same host
+- Any multi-cluster setup on a single host
+- WiFi-based setups where clusters need to talk to each other
+
+**Env file settings:**
+```bash
+SHARED_NETWORK=hub  # name of the cluster whose network to join
+```
+
+The referenced cluster must be running before creating the new one. On delete, only the DHCP/DNS entries are removed — the shared network stays intact.
 
 ### Bridge Mode (Experimental)
 
@@ -226,9 +247,25 @@ sudo nmcli connection delete bridge-slave-eth0
 sudo nmcli connection up "Wired connection 1"
 ```
 
-## Cross-host multi-cluster setup
+## Multi-cluster setup
 
-Requires bridge mode on both hosts.
+### Same host (shared network — recommended)
+
+No special setup required. Works on WiFi.
+
+```bash
+# hub.env: standard NAT mode
+./create.sh hub.env
+
+# spoke.env: includes SHARED_NETWORK=hub
+./create.sh spoke.env
+```
+
+Both VMs end up on the same bridge (e.g. `virbr-shl0`, subnet `192.168.133.0/24`). Hub gets `.80`, spoke gets `.81`. They can communicate directly.
+
+### Cross-host (bridge mode)
+
+Requires bridge mode on both hosts and wired ethernet.
 
 **On each host (one-time):**
 1. Set up the Linux bridge (see [Bridge Setup](#bridge-setup-for-bridge-mode))
