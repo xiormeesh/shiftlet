@@ -625,7 +625,10 @@ EOF
     sudo chmod 644 "${DATA_DIR}/${name}/kubeadmin-password"
 
     info "Detaching install ISO"
-    sudo virsh detach-disk "$hostname" "$iso" --config
+    # Detach from both live VM and persistent config to prevent
+    # stale CDROM references after reboot (the ISO lives in /tmp)
+    sudo virsh detach-disk "$hostname" "$iso" --current 2>/dev/null || true
+    sudo virsh detach-disk "$hostname" "$iso" --persistent 2>/dev/null || true
 
     local elapsed=$(( ($(date +%s) - start) / 60 ))
     echo ""
