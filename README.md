@@ -263,6 +263,22 @@ No special setup required. Works on WiFi.
 
 Both VMs end up on the same bridge (e.g. `virbr-shl0`, subnet `192.168.133.0/24`). Hub gets `.80`, spoke gets `.81`. They can communicate directly.
 
+### Cross-cluster DNS
+
+Shiftlet automatically sets up wildcard DNS so that pods on one cluster can resolve any hostname on another cluster (e.g. `cluster-proxy-anp.apps.hub.shiftlet.local` from a spoke). This is critical for services like MCE cluster-proxy that create konnectivity tunnels between clusters.
+
+**How it works:**
+- A systemd service (`shiftlet-dns`) runs a lightweight dnsmasq on `127.0.0.2:53`
+- It serves wildcard `address=` records from `/var/lib/shiftlet/dns/*.conf` (one per cluster)
+- Each libvirt network forwards `*.shiftlet.local` queries to it via a `server=` dnsmasq option
+- `create.sh` writes the DNS entry and ensures the service; `delete.sh` cleans up
+
+**No manual steps needed** — DNS is provisioned automatically during cluster creation. Host-side `/etc/hosts` entries are still added for direct host access (oc CLI, browser).
+
+**SELinux note:** the DNS config directory (`/var/lib/shiftlet/dns/`) is labelled `dnsmasq_etc_t` via `semanage fcontext` so dnsmasq can read it under SELinux enforcement.
+
+**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS forwarding is not available. VMs use whatever DNS their NMState config points to.
+
 ### Cross-host (bridge mode)
 
 Requires bridge mode on both hosts and wired ethernet.
