@@ -39,7 +39,7 @@ Up to 10 NAT clusters are supported per host (subnets `192.168.133.x` through `1
 
 ### Local access (default)
 
-Each cluster lives inside an isolated libvirt NAT network. The host machine can reach the cluster; no other machine on the LAN can. DNS for `<name>.shiftlet.local` is handled via `/etc/hosts` on the host — the libvirt domain DNS is `localOnly="yes"`.
+Each cluster lives inside an isolated libvirt NAT network. The host machine can reach the cluster; no other machine on the LAN can. Host-side DNS uses `/etc/hosts` entries for specific hostnames (`api.*`, `console-openshift-console.apps.*`). Cross-cluster wildcard DNS (`*.apps.<cluster>.shiftlet.local`) is handled by the shiftlet-dns service (see below).
 
 ```
 other host   ✗
@@ -67,6 +67,32 @@ host A ────── virbr-shl0 (NAT) ─┬─ Hub VM  (192.168.133.80)
 - On delete, only the DHCP/DNS entries are removed; the parent network stays intact
 
 **Persisted state:** `/var/lib/shiftlet/<name>/shared_network` stores the parent cluster name so delete knows to clean up entries rather than destroy the network.
+
+### Cross-cluster DNS
+
+Pods on one cluster often need to resolve hostnames on another cluster (e.g., `cluster-proxy-anp.apps.hub.shiftlet.local` from a spoke). Static `/etc/hosts` entries can't provide wildcard resolution, so shiftlet runs a lightweight dnsmasq on the host:
+
+```
+Pod → OCP CoreDNS → Node upstream DNS (libvirt dnsmasq :53)
+     → server=/shiftlet.local/127.0.0.1#5353  (forwarding rule)
+       → shiftlet-dns dnsmasq (127.0.0.1:5353)
+         → address=/hub.shiftlet.local/192.168.133.80    (wildcard)
+         → address=/spoke.shiftlet.local/192.168.133.81  (wildcard)
+```
+
+**How it works:**
+- A systemd service (`shiftlet-dns`) runs dnsmasq on `127.0.0.1:5353`
+- It reads wildcard entries from `/var/lib/shiftlet/dns/*.conf` — one file per cluster with `address=/<name>.shiftlet.local/<vmIP>`
+- Each libvirt network's dnsmasq forwards `*.shiftlet.local` queries to it via a `server=` option in `<dnsmasq:options>`
+- The `localOnly` attribute is not set on the `<domain>` element, allowing forwarding of unknown subdomains
+- `create.sh` writes the DNS entry and ensures the service is running
+- `delete.sh` removes the entry and stops the service when no clusters remain
+
+**Host-side DNS** still uses `/etc/hosts` for specific hostnames needed by the host (oc CLI, browser). The shiftlet-dns service only serves VMs via the libvirt dnsmasq forwarding chain.
+
+**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS is not available. VMs use their static NMState DNS config.
+
+**Migration:** existing clusters created before this feature can be patched in place with `./migrate-dns.sh` (no redeploy needed).
 
 ### LAN access (bridge mode)
 
@@ -161,6 +187,9 @@ The cluster ID is registered before any external resources are created. If `crea
   hub/
     kubeconfig
     ...
+  dns/
+    hub.conf               # wildcard DNS: address=/hub.shiftlet.local/192.168.133.80
+    spoke.conf             # one file per cluster, read by shiftlet-dns service
 
 /tmp/shiftlet-<name>/      # install-time working directory; not needed after install
 ```

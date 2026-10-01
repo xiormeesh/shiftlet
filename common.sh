@@ -12,6 +12,13 @@ VM_IP_SUFFIX=80
 MAX_CLUSTERS=10
 OCP_RELEASE_BASE="quay.io/openshift-release-dev/ocp-release"
 
+# ── DNS constants ─────────────────────────────────────────────────────────────
+DNS_DIR="${DATA_DIR}/dns"
+DNS_PORT=53
+DNS_LISTEN="127.0.0.2"
+DNS_SERVICE="shiftlet-dns"
+DNS_SYSTEMD_UNIT="/etc/systemd/system/${DNS_SERVICE}.service"
+
 # ── architecture ──────────────────────────────────────────────────────────────
 _arch() {
     case $(uname -m) in
@@ -142,6 +149,86 @@ Add your wired interface to the bridge (see README.md)"
     echo "br0"
 }
 
+# ── cross-cluster DNS ──────────────────────────────────────────────────────────
+# A lightweight dnsmasq on 127.0.0.1:5353 serves wildcard DNS for all
+# *.shiftlet.local domains.  Each libvirt network forwards shiftlet.local
+# queries there via a dnsmasq server= option.  This lets pods on one cluster
+# resolve *.apps.<other-cluster>.shiftlet.local without per-hostname
+# /etc/hosts entries or hostAliases.
+
+ensure_dns_dir() {
+    sudo mkdir -p "$DNS_DIR"
+    # dnsmasq runs in SELinux dnsmasq_t domain and can only read dnsmasq_etc_t files
+    sudo semanage fcontext -a -t dnsmasq_etc_t "${DNS_DIR}(/.*)?" 2>/dev/null || true
+    sudo restorecon -R "$DNS_DIR"
+}
+
+write_dns_entry() {
+    local name=$1 vmIP=$2
+    ensure_dns_dir
+    echo "address=/${name}.shiftlet.local/${vmIP}" \
+        | sudo tee "${DNS_DIR}/${name}.conf" >/dev/null
+    info "Wrote DNS wildcard: *.${name}.shiftlet.local → ${vmIP}"
+}
+
+remove_dns_entry() {
+    local name=$1
+    sudo rm -f "${DNS_DIR}/${name}.conf"
+}
+
+install_dns_service() {
+    [[ -f "$DNS_SYSTEMD_UNIT" ]] && return 0
+    info "Installing ${DNS_SERVICE} systemd unit"
+    sudo tee "$DNS_SYSTEMD_UNIT" >/dev/null << UNIT
+[Unit]
+Description=Shiftlet cross-cluster DNS resolver
+After=libvirtd.service
+Wants=libvirtd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dnsmasq \\
+    --keep-in-foreground \\
+    --no-resolv \\
+    --no-hosts \\
+    --bind-interfaces \\
+    --listen-address=${DNS_LISTEN} \\
+    --port=${DNS_PORT} \\
+    --user=root \\
+    --conf-dir=${DNS_DIR}/,*.conf \\
+    --log-facility=- \\
+    --pid-file=/run/shiftlet-dns.pid
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    sudo systemctl daemon-reload
+    sudo systemctl enable "$DNS_SERVICE"
+}
+
+restart_dns() {
+    install_dns_service
+    # Restart picks up new/removed conf files
+    if sudo systemctl is-active --quiet "$DNS_SERVICE" 2>/dev/null; then
+        sudo systemctl restart "$DNS_SERVICE"
+    else
+        sudo systemctl start "$DNS_SERVICE"
+    fi
+}
+
+stop_dns_if_empty() {
+    local remaining
+    remaining=$(find "$DNS_DIR" -name '*.conf' 2>/dev/null | wc -l)
+    if [[ "$remaining" -eq 0 ]]; then
+        info "No DNS entries remain, stopping ${DNS_SERVICE}"
+        sudo systemctl stop "$DNS_SERVICE" 2>/dev/null || true
+    else
+        restart_dns
+    fi
+}
+
 # ── shared network helpers ─────────────────────────────────────────────────────
 # Find next available VM IP on an existing network's subnet
 next_shared_vm_ip() {
@@ -159,6 +246,8 @@ next_shared_vm_ip() {
 # Add a VM to an existing libvirt network (DHCP reservation + DNS)
 join_shared_network() {
     local network=$1 vmIP=$2 vmMAC=$3 vmHostname=$4 domain=$5
+    local cluster_name
+    cluster_name=$(echo "$domain" | sed 's/\.shiftlet\.local$//')
 
     info "Adding VM to existing network ${network}"
 
@@ -170,6 +259,10 @@ join_shared_network() {
         "<host ip='${vmIP}'><hostname>master-0.${domain}</hostname><hostname>api.${domain}</hostname></host>" \
         --live --config
 
+    # Wildcard DNS for cross-cluster resolution
+    write_dns_entry "$cluster_name" "$vmIP"
+    restart_dns
+
     info "Adding DNS entries to /etc/hosts"
     echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
         | sudo tee -a /etc/hosts >/dev/null
@@ -178,8 +271,9 @@ join_shared_network() {
 # Remove a VM from a shared network (best-effort, network may already be gone)
 leave_shared_network() {
     local shared_name=$1 vmIP=$2 vmMAC=$3 vmHostname=$4 domain=$5
-    local network
+    local network cluster_name
     network=$(net_name "$shared_name")
+    cluster_name=$(echo "$domain" | sed 's/\.shiftlet\.local$//')
 
     if sudo virsh net-info "$network" &>/dev/null; then
         info "Removing VM from shared network ${network}"
@@ -192,6 +286,10 @@ leave_shared_network() {
     else
         info "Shared network ${network} not found, skipping cleanup"
     fi
+
+    # Remove wildcard DNS entry
+    remove_dns_entry "$cluster_name"
+    stop_dns_if_empty
 }
 
 find_iso() {
@@ -325,7 +423,7 @@ create_nat_network() {
 
     info "Creating libvirt network ${network} (${subnet}.0/24)"
     cat > "${assets}/${network}.xml" << NETXML
-<network>
+<network xmlns:dnsmasq="http://libvirt.org/schemas/network/dnsmasq/1.0">
   <name>${network}</name>
   <forward mode="nat">
     <nat>
@@ -334,7 +432,7 @@ create_nat_network() {
   </forward>
   <bridge name="${bridge}" stp="on" delay="0"/>
   <mac address="${netMAC}"/>
-  <domain name="${domain}" localOnly="yes"/>
+  <domain name="${domain}"/>
   <dns>
     <host ip="${vmIP}">
       <hostname>master-0.${domain}</hostname>
@@ -347,12 +445,19 @@ create_nat_network() {
       <host mac="${vmMAC}" name="master-0" ip="${vmIP}"/>
     </dhcp>
   </ip>
+  <dnsmasq:options>
+    <dnsmasq:option value="server=/shiftlet.local/${DNS_LISTEN}#${DNS_PORT}"/>
+  </dnsmasq:options>
 </network>
 NETXML
 
     sudo virsh net-define "${assets}/${network}.xml"
     sudo virsh net-start "$network"
     sudo virsh net-autostart "$network"
+
+    # Wildcard DNS for cross-cluster resolution
+    write_dns_entry "$name" "$vmIP"
+    restart_dns
 
     info "Adding DNS entries to /etc/hosts"
     echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
@@ -683,6 +788,11 @@ delete_cluster() {
 
     info "Removing DNS entries for ${domain} from /etc/hosts"
     sudo sed -i "/${domain}/d" /etc/hosts
+
+    # Clean up wildcard DNS entry
+    remove_dns_entry "$name"
+    stop_dns_if_empty
+
     [[ -d "$assets" && "$assets" == *"shiftlet-"* ]] && rm -rf "$assets" || true
     sudo rm -rf "${DATA_DIR}/${name}"
     [[ -n "$cid" ]] && sudo sed -i "/^${cid}=${name}$/d" "$REGISTRY_FILE"
