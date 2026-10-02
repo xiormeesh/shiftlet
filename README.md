@@ -8,7 +8,7 @@ Supports multiple clusters on the same host (shared networking) and cross-host c
 
 - Linux host with libvirt/KVM (`virsh`, `virt-install`, `qemu-kvm`)
   - Fedora: `sudo dnf install @virtualization virt-install`
-- `sudo` access (for virsh, /etc/hosts, iptables, /var/lib/shiftlet)
+- `sudo` access (for virsh, systemd-resolved, iptables, /var/lib/shiftlet)
 - A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret)
 - `oc` client (auto-installed if missing)
 - `gh` CLI (only for version resolution) — [install](https://cli.github.com)
@@ -96,7 +96,7 @@ Creates isolated virtual networks per cluster. Works on WiFi or wired ethernet.
 
 - VM gets private IP on isolated subnet (192.168.133.x, 192.168.134.x, etc.)
 - Host can reach VM, LAN cannot
-- /etc/hosts entries are added automatically on the host
+- Wildcard DNS is configured automatically on the host via systemd-resolved
 
 Use NAT for:
 - Single cluster development
@@ -132,7 +132,7 @@ Connects VMs directly to your LAN via a Linux bridge. Requires wired ethernet an
 - VM gets explicit LAN IP (set via `BRIDGE_VM_IP` in env file)
 - VM reachable from any device on the LAN, including the host
 - Cross-host multi-cluster works without port forwarding
-- /etc/hosts added automatically on the install host; must be added manually on other hosts (printed at end of install)
+- Wildcard DNS is configured automatically on the install host; on other hosts, add the printed `/etc/hosts` line
 
 Use bridge for:
 - Multi-cluster across physical hosts
@@ -156,7 +156,7 @@ BRIDGE_VM_IP=192.168.1.80  # unique per cluster across all hosts on LAN
 ./create.sh hub.env
 ```
 
-After install, shiftlet prints the /etc/hosts line and `scp` command needed on the other host.
+After install, shiftlet prints the `/etc/hosts` line and `scp` command needed on the other host.
 
 ## Bridge Mode Assumptions and Limitations
 
@@ -273,11 +273,11 @@ Shiftlet automatically sets up wildcard DNS so that pods on one cluster can reso
 - Each libvirt network forwards `*.shiftlet.local` queries to it via a `server=` dnsmasq option
 - `create.sh` writes the DNS entry and ensures the service; `delete.sh` cleans up
 
-**No manual steps needed** — DNS is provisioned automatically during cluster creation. Host-side `/etc/hosts` entries are still added for direct host access (oc CLI, browser).
+**No manual steps needed** — DNS is provisioned automatically during cluster creation. The host machine also gets wildcard resolution via a systemd-resolved forwarding rule (`~shiftlet.local` → `127.0.0.2`), so no `/etc/hosts` entries are needed.
 
 **SELinux note:** the DNS config directory (`/var/lib/shiftlet/dns/`) is labelled `dnsmasq_etc_t` via `semanage fcontext` so dnsmasq can read it under SELinux enforcement.
 
-**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS forwarding is not available. VMs use whatever DNS their NMState config points to.
+**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS forwarding to VMs is not available. The host still gets wildcard resolution via systemd-resolved.
 
 ### Cross-host (bridge mode)
 
@@ -298,13 +298,13 @@ Requires bridge mode on both hosts and wired ethernet.
 ```
 
 **After each install, shiftlet prints:**
-- The /etc/hosts line to add on the other host
+- The `/etc/hosts` line to add on the other host (that host lacks the shiftlet-dns service)
 - The `scp` command to copy the kubeconfig to the other host
 
 **What's automatic (on the install host):**
-- /etc/hosts entries for the cluster domains → VM IP
+- Wildcard DNS for all `*.shiftlet.local` domains via shiftlet-dns + systemd-resolved
 
 **What's manual (on the other host):**
-- Add the printed /etc/hosts line
+- Add the printed `/etc/hosts` line
 - Copy kubeconfig with the printed scp command
 

@@ -39,7 +39,7 @@ Up to 10 NAT clusters are supported per host (subnets `192.168.133.x` through `1
 
 ### Local access (default)
 
-Each cluster lives inside an isolated libvirt NAT network. The host machine can reach the cluster; no other machine on the LAN can. Host-side DNS uses `/etc/hosts` entries for specific hostnames (`api.*`, `console-openshift-console.apps.*`). Cross-cluster wildcard DNS (`*.apps.<cluster>.shiftlet.local`) is handled by the shiftlet-dns service (see below).
+Each cluster lives inside an isolated libvirt NAT network. The host machine can reach the cluster; no other machine on the LAN can. All `*.shiftlet.local` DNS is handled by the shiftlet-dns service (see below) with systemd-resolved forwarding on the host.
 
 ```
 other host   ✗
@@ -74,23 +74,28 @@ Pods on one cluster often need to resolve hostnames on another cluster (e.g., `c
 
 ```
 Pod → OCP CoreDNS → Node upstream DNS (libvirt dnsmasq :53)
-     → server=/shiftlet.local/127.0.0.1#5353  (forwarding rule)
-       → shiftlet-dns dnsmasq (127.0.0.1:5353)
-         → address=/hub.shiftlet.local/192.168.133.80    (wildcard)
-         → address=/spoke.shiftlet.local/192.168.133.81  (wildcard)
+     → server=/shiftlet.local/127.0.0.2#53  (forwarding rule)
+       → shiftlet-dns dnsmasq (127.0.0.2:53)
+         → address=/hub.shiftlet.local/192.168.133.80    (A wildcard)
+         → address=/hub.shiftlet.local/::                (AAAA → immediate empty response)
+         → address=/spoke.shiftlet.local/192.168.133.81  (A wildcard)
+         → address=/spoke.shiftlet.local/::              (AAAA → immediate empty response)
+
+Host → systemd-resolved → 127.0.0.2  (via Domains=~shiftlet.local)
 ```
 
 **How it works:**
-- A systemd service (`shiftlet-dns`) runs dnsmasq on `127.0.0.1:5353`
-- It reads wildcard entries from `/var/lib/shiftlet/dns/*.conf` — one file per cluster with `address=/<name>.shiftlet.local/<vmIP>`
+- A systemd service (`shiftlet-dns`) runs dnsmasq on `127.0.0.2:53`
+- It reads wildcard entries from `/var/lib/shiftlet/dns/*.conf` — one file per cluster with `address=` lines for both A (IPv4) and AAAA (`::`)
 - Each libvirt network's dnsmasq forwards `*.shiftlet.local` queries to it via a `server=` option in `<dnsmasq:options>`
 - The `localOnly` attribute is not set on the `<domain>` element, allowing forwarding of unknown subdomains
-- `create.sh` writes the DNS entry and ensures the service is running
+- A systemd-resolved drop-in (`/etc/systemd/resolved.conf.d/shiftlet.conf`) forwards `~shiftlet.local` to `127.0.0.2`, giving the host full wildcard resolution (no `/etc/hosts` entries needed)
+- `create.sh` writes the DNS entry and ensures both services are configured
 - `delete.sh` removes the entry and stops the service when no clusters remain
 
-**Host-side DNS** still uses `/etc/hosts` for specific hostnames needed by the host (oc CLI, browser). The shiftlet-dns service only serves VMs via the libvirt dnsmasq forwarding chain.
+**Why `address=/::/`?** dnsmasq's `address=` with an IPv4 address only creates A records. Without an explicit AAAA entry, AAAA queries are forwarded upstream. Since shiftlet-dns has `--no-resolv` (no upstreams), it returns `REFUSED`, which the bridge dnsmasq treats as an error and hangs on. The `::` entry ensures AAAA queries get an immediate response.
 
-**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS is not available. VMs use their static NMState DNS config.
+**Bridge mode limitation:** bridge mode does not create a libvirt network, so cross-cluster DNS forwarding to VMs is not available. The host still gets wildcard resolution via systemd-resolved.
 
 **Migration:** existing clusters created before this feature can be patched in place with `./migrate-dns.sh` (no redeploy needed).
 
@@ -134,7 +139,7 @@ host B ── (LAN) ── br0 ── VM (192.168.1.80)
 - VM network interface name is `enp1s0` (default for KVM virtio)
 
 **Post-install (manual on other hosts):**
-- Add /etc/hosts entries (printed at end of install)
+- Add `/etc/hosts` entries (printed at end of install — remote hosts lack shiftlet-dns)
 - Copy kubeconfig via scp (printed at end of install)
 
 
@@ -150,7 +155,7 @@ host B ── (LAN) ── br0 ── VM (192.168.1.80)
     ├─ NAT mode:     define + start libvirt NAT network (with autostart)
     │  shared mode:  add DHCP reservation + DNS entries to parent network
     │  bridge mode:  validate br0 exists and is UP
-    ├─ add /etc/hosts entries (VM IP → cluster domains)
+    ├─ write DNS entry + ensure shiftlet-dns + systemd-resolved forwarding
     ├─ write agent-config.yaml + install-config.yaml
     │  bridge mode: agent-config.yaml includes NMState static IP config
     ├─ build agent ISO  (openshift-install agent create image)
@@ -198,7 +203,7 @@ The cluster ID is registered before any external resources are created. If `crea
 
 - Linux host with libvirt/KVM (`virt-install`, `virsh`, `qemu-kvm`)
   - Fedora: `sudo dnf install @virtualization virt-install`
-- `sudo` access (for virsh, /etc/hosts, iptables, /var/lib/shiftlet)
+- `sudo` access (for virsh, systemd-resolved, iptables, /var/lib/shiftlet)
 - A valid [OpenShift pull secret](https://console.redhat.com/openshift/install/pull-secret) — path set via `PULL_SECRET` in env file
 - `oc` client (auto-installed if missing)
 - `gh` CLI — only for version resolution (install from https://cli.github.com)
