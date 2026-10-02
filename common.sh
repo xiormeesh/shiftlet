@@ -161,15 +161,30 @@ ensure_dns_dir() {
     # dnsmasq runs in SELinux dnsmasq_t domain and can only read dnsmasq_etc_t files
     sudo semanage fcontext -a -t dnsmasq_etc_t "${DNS_DIR}(/.*)?" 2>/dev/null || true
     sudo restorecon -R "$DNS_DIR"
+    # Mark shiftlet.local as locally-served so unmatched queries return
+    # NXDOMAIN instead of REFUSED (which upstream dnsmasq treats as an error
+    # and hangs on).  This is critical because pod resolv.conf search-domain
+    # expansion (ndots:5) produces names like
+    # api.hub.shiftlet.local.spoke.shiftlet.local — those must NXDOMAIN fast.
+    echo "local=/shiftlet.local/" \
+        | sudo tee "${DNS_DIR}/00-base.conf" >/dev/null
 }
 
 write_dns_entry() {
     local name=$1 vmIP=$2
     ensure_dns_dir
-    printf 'address=/%s.shiftlet.local/%s\naddress=/%s.shiftlet.local/::\n' \
-        "$name" "$vmIP" "$name" \
+    # Only wildcard *.apps — api/api-int get explicit records.
+    # A broad address=/<name>.shiftlet.local/ would also match
+    # search-domain-expanded names from other clusters
+    # (e.g. api.hub.shiftlet.local.spoke.shiftlet.local) and return
+    # the wrong IP.  Narrowing to apps.* + explicit records avoids this.
+    printf 'address=/apps.%s.shiftlet.local/%s\n' "$name" "$vmIP" \
         | sudo tee "${DNS_DIR}/${name}.conf" >/dev/null
-    info "Wrote DNS wildcard: *.${name}.shiftlet.local → ${vmIP}"
+    printf 'address=/api.%s.shiftlet.local/%s\n' "$name" "$vmIP" \
+        | sudo tee -a "${DNS_DIR}/${name}.conf" >/dev/null
+    printf 'address=/api-int.%s.shiftlet.local/%s\n' "$name" "$vmIP" \
+        | sudo tee -a "${DNS_DIR}/${name}.conf" >/dev/null
+    info "Wrote DNS records: *.apps / api / api-int .${name}.shiftlet.local → ${vmIP}"
 }
 
 remove_dns_entry() {
