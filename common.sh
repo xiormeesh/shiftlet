@@ -166,7 +166,8 @@ ensure_dns_dir() {
 write_dns_entry() {
     local name=$1 vmIP=$2
     ensure_dns_dir
-    echo "address=/${name}.shiftlet.local/${vmIP}" \
+    printf 'address=/%s.shiftlet.local/%s\naddress=/%s.shiftlet.local/::\n' \
+        "$name" "$vmIP" "$name" \
         | sudo tee "${DNS_DIR}/${name}.conf" >/dev/null
     info "Wrote DNS wildcard: *.${name}.shiftlet.local → ${vmIP}"
 }
@@ -174,6 +175,16 @@ write_dns_entry() {
 remove_dns_entry() {
     local name=$1
     sudo rm -f "${DNS_DIR}/${name}.conf"
+}
+
+ensure_resolved_forwarding() {
+    local conf="/etc/systemd/resolved.conf.d/shiftlet.conf"
+    [[ -f "$conf" ]] && return 0
+    info "Configuring systemd-resolved to forward shiftlet.local queries"
+    sudo mkdir -p /etc/systemd/resolved.conf.d
+    printf '[Resolve]\nDNS=%s\nDomains=~shiftlet.local\n' "${DNS_LISTEN}" \
+        | sudo tee "$conf" >/dev/null
+    sudo systemctl restart systemd-resolved
 }
 
 install_dns_service() {
@@ -210,6 +221,7 @@ UNIT
 
 restart_dns() {
     install_dns_service
+    ensure_resolved_forwarding
     # Restart picks up new/removed conf files
     if sudo systemctl is-active --quiet "$DNS_SERVICE" 2>/dev/null; then
         sudo systemctl restart "$DNS_SERVICE"
@@ -262,10 +274,6 @@ join_shared_network() {
     # Wildcard DNS for cross-cluster resolution
     write_dns_entry "$cluster_name" "$vmIP"
     restart_dns
-
-    info "Adding DNS entries to /etc/hosts"
-    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
-        | sudo tee -a /etc/hosts >/dev/null
 }
 
 # Remove a VM from a shared network (best-effort, network may already be gone)
@@ -458,10 +466,6 @@ NETXML
     # Wildcard DNS for cross-cluster resolution
     write_dns_entry "$name" "$vmIP"
     restart_dns
-
-    info "Adding DNS entries to /etc/hosts"
-    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
-        | sudo tee -a /etc/hosts >/dev/null
 }
 
 create_bridge_network() {
@@ -479,9 +483,9 @@ create_bridge_network() {
 
     # No libvirt network creation needed - virt-install will use bridge directly
 
-    info "Adding DNS entries to /etc/hosts"
-    echo "${vmIP} api.${domain} console-openshift-console.apps.${domain} oauth-openshift.apps.${domain}" \
-        | sudo tee -a /etc/hosts >/dev/null
+    # Wildcard DNS for cross-cluster resolution
+    write_dns_entry "$name" "$vmIP"
+    restart_dns
 }
 
 # ── create ────────────────────────────────────────────────────────────────────
@@ -785,9 +789,6 @@ delete_cluster() {
             && sudo virsh net-destroy "$network" || true
         sudo virsh net-undefine "$network"
     fi
-
-    info "Removing DNS entries for ${domain} from /etc/hosts"
-    sudo sed -i "/${domain}/d" /etc/hosts
 
     # Clean up wildcard DNS entry
     remove_dns_entry "$name"
